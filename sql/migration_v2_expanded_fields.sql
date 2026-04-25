@@ -26,7 +26,7 @@ WHERE ticket_size_min IS NULL AND first_cheque_min IS NOT NULL;
 ALTER TABLE vc_members ALTER COLUMN role DROP NOT NULL;
 ALTER TABLE vc_members
     ADD COLUMN IF NOT EXISTS position    TEXT,
-    ADD COLUMN IF NOT EXISTS expertise   TEXT,
+    ADD COLUMN IF NOT EXISTS expertise   TEXT[]  DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS description TEXT,
     ADD COLUMN IF NOT EXISTS linkedin    TEXT,
     ADD COLUMN IF NOT EXISTS email       TEXT,
@@ -39,6 +39,7 @@ UPDATE vc_members SET position = role WHERE position IS NULL AND role IS NOT NUL
 ALTER TABLE portfolio_companies ALTER COLUMN sector DROP NOT NULL;
 ALTER TABLE portfolio_companies
     ADD COLUMN IF NOT EXISTS overview      TEXT,
+    ADD COLUMN IF NOT EXISTS stage         TEXT[]  DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS sectors       TEXT[]  DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS status        TEXT,
     ADD COLUMN IF NOT EXISTS hq            TEXT,

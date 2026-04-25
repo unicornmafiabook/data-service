@@ -44,7 +44,7 @@ class VCFund(BaseModel):
 class VCMember(BaseModel):
     name:        str
     position:    str
-    expertise:   str | None = None
+    expertise:   list[str] = []
     description: str | None = None  # reasoning about investment focus
     linkedin:    str | None = None
     email:       str | None = None
@@ -65,7 +65,7 @@ class PortfolioCompany(BaseModel):
     name:             str
     overview:         str | None = None
     sectors:          list[str] = []
-    stage:            InvestmentStage | None = None
+    stages:           list[InvestmentStage] = []
     status:           PortcoStatus | None = None
     hq:               str | None = None
     founded_year:     int | None = None
