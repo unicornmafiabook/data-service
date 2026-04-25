@@ -11,27 +11,36 @@
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Liveness + DB check |
+| `GET` | `/investors/stats` | Dashboard counts |
 | `GET` | `/investors` | Paginated list of all investors |
-| `GET` | `/investors/search` | Filtered investor search |
+| `POST` | `/investors` | Manually create an investor |
+| `GET` | `/investors/search` | Filtered search (query params) |
+| `POST` | `/investors/search` | Filtered search (JSON body, supports arrays) |
 | `GET` | `/investors/{investor_id}` | Single investor + raw source rows |
-| `GET` | `/investors/{investor_id}/portfolio` | Legacy portfolio companies (from CSV import) |
-| `POST` | `/investors/{investor_id}/mark-for-enrichment` | Queue an investor for enrichment |
-| `GET` | `/enrichment/next-vc` | Pull the next investor to enrich |
+| `PATCH` | `/investors/{investor_id}` | Partial field update |
+| `GET` | `/investors/{investor_id}/members` | VC team members |
+| `GET` | `/investors/{investor_id}/funds` | Fund history |
+| `GET` | `/investors/{investor_id}/portfolio` | Legacy CSV-imported portfolio companies |
+| `GET` | `/investors/{investor_id}/similar` | Investors with overlapping stages/sectors |
+| `POST` | `/investors/{investor_id}/mark-for-enrichment` | Queue investor for enrichment |
+| `GET` | `/enrichment/stats` | Enrichment queue depth |
+| `GET` | `/enrichment/next-vc` | Pull next investor to enrich |
+| `GET` | `/enrichment/vc/{vc_id}` | Full enrichment snapshot |
 | `POST` | `/enrichment/vc/{vc_id}/complete` | Submit enrichment results |
-| `POST` | `/ingest/run` | Re-run CSV import (internal/admin only) |
+| `POST` | `/ingest/run` | Re-run CSV import (admin only) |
 
 ---
 
 ## IDs — important
 
-There are two investor ID types. Use the right one per endpoint.
+Two investor ID types exist. Use the right one per endpoint.
 
 | Field | Type | Used in |
 |-------|------|---------|
-| `id` | UUID string | `/investors/{investor_id}` endpoints |
-| `external_vc_id` | integer | `/enrichment/vc/{vc_id}/complete` |
+| `id` | UUID string | All `/investors/{investor_id}` endpoints |
+| `external_vc_id` | integer | All `/enrichment/vc/{vc_id}` endpoints |
 
-The `external_vc_id` is the integer `id` inside the `VC` enrichment model. It exists because the enrichment contract requires a sequential integer. For all standard investor browsing/search, use the UUID `id`.
+`external_vc_id` is the sequential integer the enrichment agent uses as `VC.id`. For all standard browsing and search, use the UUID `id`.
 
 ---
 
@@ -41,28 +50,46 @@ The `external_vc_id` is the integer `id` inside the `VC` enrichment model. It ex
 
 ### `GET /health`
 
-Returns the service and database status. Call this before any other request to confirm the service is up.
+```json
+{ "status": "ok", "database": "connected" }
+```
 
-**Response**
+---
+
+### `GET /investors/stats`
+
+Dashboard summary counts.
+
 ```json
 {
-  "status": "ok",
-  "database": "connected"
+  "investors": {
+    "total_investors": 8495,
+    "enriched": 12,
+    "pending": 3,
+    "not_started": 8480,
+    "needs_review": 237,
+    "multi_source": 842
+  },
+  "investor_sources": 10131,
+  "vc_members": 48,
+  "vc_funds": 21,
+  "portfolio_companies": 94
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `enriched` | Investors with `enrichment_status = completed` |
+| `needs_review` | Deduplicated by name only — lower confidence |
+| `multi_source` | Appeared in more than one CSV source |
 
 ---
 
 ### `GET /investors`
 
-Returns a paginated list of all investors ordered alphabetically. Use this to build a browse / directory view.
+Paginated alphabetical list.
 
-**Query parameters**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `limit` | integer | `50` | Max results to return. Hard cap: `200` |
-| `offset` | integer | `0` | Number of records to skip for pagination |
+**Query params:** `limit` (default 50, max 200), `offset` (default 0)
 
 **Response**
 ```json
@@ -70,13 +97,21 @@ Returns a paginated list of all investors ordered alphabetically. Use this to bu
   "count": 50,
   "results": [
     {
-      "id": "b264da2c-6957-48b5-8c35-3e97d52e3086",
+      "id": "b264da2c-...",
       "canonical_name": ".406 Ventures",
       "website": "https://406ventures.com",
       "domain": "406ventures.com",
-      "stages": ["seed", "series_a", "series_b"],
+      "investor_type": null,
+      "status": "Active",
+      "hq_country": "United States",
+      "location": "Boston, United States",
+      "stages": ["seed", "series_a"],
       "sectors": ["deeptech"],
       "geographies": ["United States"],
+      "rounds": ["Seed", "Series A"],
+      "geo_focus": ["United States"],
+      "short_description": null,
+      "enrichment_status": "not_started",
       "first_cheque_min": null,
       "first_cheque_max": null,
       "source_count": 1,
@@ -86,138 +121,111 @@ Returns a paginated list of all investors ordered alphabetically. Use this to bu
 }
 ```
 
-**Field notes**
+---
 
-| Field | Description |
-|-------|-------------|
-| `id` | UUID — use this for detail page routing e.g. `/vc/b264da2c-...` |
-| `canonical_name` | Best available name, deduplicated across all sources |
-| `domain` | Clean domain without `www` or protocol e.g. `406ventures.com` |
-| `stages` | Internal normalised values — see stage taxonomy below |
-| `sectors` | Internal normalised values — see sector taxonomy below |
-| `geographies` | Countries the VC invests in, from CSV sources |
-| `source_count` | How many of the 4 CSV sources this investor appeared in |
-| `needs_review` | `true` if deduplication was uncertain — treat data with lower confidence |
+### `POST /investors`
+
+Manually create an investor. Rejects duplicate domains with `409`.
+
+**Request body**
+```json
+{
+  "canonical_name": "Acme Ventures",
+  "website": "https://acmevc.com",
+  "investor_type": "VC",
+  "status": "Active",
+  "hq_city": "London",
+  "hq_country": "United Kingdom",
+  "stages": ["seed", "series_a"],
+  "sectors": ["fintech", "b2b"],
+  "geographies": ["United Kingdom", "Europe"],
+  "description": "Early-stage fintech investor.",
+  "investment_thesis": "We back founders reimagining financial infrastructure.",
+  "first_cheque_min": 250000,
+  "first_cheque_max": 2000000,
+  "first_cheque_currency": "GBP"
+}
+```
+
+All fields except `canonical_name` are optional.
+
+**Response (201)**
+```json
+{ "id": "uuid", "external_vc_id": 8496 }
+```
 
 ---
 
 ### `GET /investors/search`
 
-Filtered investor search. All parameters are optional and combinable.
+Simple filtered search via query params.
 
-**Query parameters**
+**Query params**
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `stage` | string | Filter to investors whose `stages` array contains this value |
-| `sector` | string | Filter to investors whose `sectors` array contains this value |
-| `geography` | string | Filter to investors whose `geographies` array contains this value |
-| `cheque_max` | number | Filter to investors whose `first_cheque_min` is ≤ this value (i.e. they can write a cheque within your budget) |
-| `q` | string | Free-text search across `canonical_name`, `investment_thesis`, `description` |
-| `limit` | integer | Default `50`, max `200` |
-| `offset` | integer | Default `0` |
+| Param | Description |
+|-------|-------------|
+| `stage` | Single stage value — investors whose `stages` contains this |
+| `sector` | Single sector value |
+| `geography` | Single geography value |
+| `cheque_max` | Investors whose `first_cheque_min` ≤ this value |
+| `q` | Text search across name, thesis, description |
+| `limit` | Default 50, max 200 |
+| `offset` | Default 0 |
 
-**Example requests**
 ```
-GET /investors/search?stage=seed
-GET /investors/search?sector=fintech&geography=United+Kingdom
+GET /investors/search?stage=seed&sector=fintech&geography=United+Kingdom
 GET /investors/search?cheque_max=500000
 GET /investors/search?q=deep+tech
-GET /investors/search?stage=seed&sector=fintech&limit=20&offset=0
 ```
 
-**Stage filter values** — use these exact strings:
+---
 
-| Value | Meaning |
-|-------|---------|
-| `idea` | Idea / concept stage |
-| `prototype` | Prototype / MVP |
-| `pre_seed` | Pre-seed |
-| `seed` | Seed |
-| `early_revenue` | Early revenue |
-| `series_a` | Series A |
-| `series_b` | Series B |
-| `series_c` | Series C |
-| `growth` | Growth / late stage |
-| `buyout` | Buyout |
-| `secondary` | Secondary |
-| `infrastructure` | Infrastructure funds |
+### `POST /investors/search`
 
-**Sector filter values** — use these exact strings:
+Rich filtered search via JSON body. Supports arrays for multi-value filtering.
 
-| Value |
-|-------|
-| `fintech` |
-| `software` |
-| `deeptech` |
-| `healthcare` |
-| `consumer` |
-| `b2b` |
-| `ecommerce` |
-| `climate` |
-| `infrastructure` |
-| `real_estate` |
-| `industrial` |
-| `media` |
-| `logistics` |
-| `generalist` |
-
-**Response** — same shape as `/investors` but with more fields per result:
+**Request body**
 ```json
 {
-  "count": 3,
-  "results": [
-    {
-      "id": "b264da2c-6957-48b5-8c35-3e97d52e3086",
-      "canonical_name": ".406 Ventures",
-      "website": "https://406ventures.com",
-      "domain": "406ventures.com",
-      "investor_type": "VC",
-      "status": "Active",
-      "hq_city": null,
-      "hq_country": "United States",
-      "stages": ["seed", "series_a"],
-      "sectors": ["deeptech"],
-      "geographies": ["United States"],
-      "first_cheque_min": 500000,
-      "first_cheque_max": 5000000,
-      "first_cheque_currency": "USD",
-      "description": null,
-      "investment_thesis": "We back founders building the future of enterprise.",
-      "source_count": 1,
-      "dedupe_confidence": 0.98,
-      "needs_review": false
-    }
-  ]
+  "name": "accel",
+  "q": "enterprise software",
+  "stages": ["seed", "series_a"],
+  "sectors": ["fintech", "deeptech"],
+  "geographies": ["United Kingdom", "Europe"],
+  "investor_type": "VC",
+  "enrichment_status": "completed",
+  "needs_review": false,
+  "cheque_min": 100000,
+  "cheque_max": 2000000,
+  "limit": 20,
+  "offset": 0
 }
 ```
 
-**Additional field notes**
+All fields are optional.
 
-| Field | Description |
-|-------|-------------|
-| `investor_type` | Raw string from source e.g. `"VC"`, `"CVC"`, `"Angel Fund"`, `"Family Office"` |
-| `status` | Raw status string from source e.g. `"Active"`, `"Member"` |
-| `hq_country` | Country of headquarters from CSV import |
-| `first_cheque_min/max` | Numeric cheque size in `first_cheque_currency` (usually USD) |
-| `investment_thesis` | Raw thesis text from CSV source |
-| `dedupe_confidence` | `0.98` = matched by domain (reliable). `0.8` = matched by name only (review) |
+| Field | Behaviour |
+|-------|-----------|
+| `name` | Substring match on `canonical_name` |
+| `q` | Substring match across name, thesis, description |
+| `stages` | Investor must have **any** of these in their stages array |
+| `sectors` | Investor must have **any** of these in their sectors array |
+| `geographies` | Matches against both `geographies` and `geo_focus` arrays |
+| `cheque_min` | Investor's `first_cheque_max` ≥ this (they can write a big enough cheque) |
+| `cheque_max` | Investor's `first_cheque_min` ≤ this (they write small enough cheques) |
 
 ---
 
 ### `GET /investors/{investor_id}`
 
-Full detail for a single investor, plus all original source rows.
+Full investor row plus original CSV source records.
 
-**Path parameter:** `investor_id` — UUID from search/list results.
-
-**Response**
 ```json
 {
   "investor": {
     "id": "b264da2c-...",
-    "canonical_name": ".406 Ventures",
     "external_vc_id": 89,
+    "canonical_name": ".406 Ventures",
     "slug": "406-ventures",
     "website": "https://406ventures.com",
     "website_url": "https://406ventures.com",
@@ -229,7 +237,7 @@ Full detail for a single investor, plus all original source rows.
     "location": "Boston, United States",
     "stages": ["seed", "series_a", "series_b"],
     "rounds": ["Seed", "Series A", "Series B"],
-    "sectors": ["enterprise", "healthcare", "deeptech"],
+    "sectors": ["enterprise", "deeptech"],
     "geographies": ["United States"],
     "geo_focus": ["United States"],
     "short_description": "Early-stage B2B and deep tech investor.",
@@ -244,13 +252,11 @@ Full detail for a single investor, plus all original source rows.
     "first_cheque_min": 500000,
     "first_cheque_max": 5000000,
     "first_cheque_currency": "USD",
-    "capital_under_management": null,
     "enrichment_status": "completed",
     "source_count": 2,
     "source_names": ["source_1", "source_4"],
-    "dedupe_key": "domain:406ventures.com",
-    "dedupe_confidence": 0.98,
     "needs_review": false,
+    "dedupe_confidence": 0.98,
     "created_at": "2026-04-25T16:36:00",
     "updated_at": "2026-04-25T21:23:00"
   },
@@ -258,52 +264,111 @@ Full detail for a single investor, plus all original source rows.
     {
       "source_name": "source_1",
       "source_row_id": "42",
-      "raw_data": { "name": ".406 Ventures", "round": "Seed, Series A", "location": "United States" }
+      "original_name": ".406 Ventures",
+      "original_website": "https://406ventures.com",
+      "raw_data": { "name": ".406 Ventures", "round": "Seed, Series A" }
     }
   ]
 }
 ```
 
-**Key field notes**
+**Field notes**
 
 | Field | Description |
 |-------|-------------|
-| `external_vc_id` | Integer ID — use this when calling enrichment endpoints |
-| `slug` | URL-safe name e.g. `"406-ventures"` — use for human-readable URLs |
-| `stages` | Internal normalised values (from CSV import) |
-| `rounds` | Human-readable enum values (from enrichment) — `"Seed"`, `"Series A"` etc. |
+| `stages` | Internal normalised values from CSV import (`seed`, `series_a` etc.) |
+| `rounds` | Human-readable values from enrichment (`Seed`, `Series A` etc.) |
 | `geographies` | Countries from CSV import |
-| `geo_focus` | Countries from enrichment (may differ / more precise) |
+| `geo_focus` | Countries from enrichment — prefer this when populated |
 | `investment_thesis` | Raw text from CSV source |
 | `stated_thesis` | Cleaned thesis from enrichment |
-| `revealed_thesis` | Thesis inferred by agent after scraping portfolio companies |
-| `investment_tendency` | `"lead"` / `"follow_on"` / `"unsure"` |
-| `enrichment_status` | `"not_started"` / `"pending"` / `"completed"` |
-| `sources` | Array of original CSV rows — useful for debugging data quality |
+| `revealed_thesis` | Thesis inferred by agent from portfolio pattern analysis |
+| `investment_tendency` | `lead` / `follow_on` / `unsure` |
+| `dedupe_confidence` | `0.98` = matched by domain. `0.8` = matched by name only |
+
+---
+
+### `PATCH /investors/{investor_id}`
+
+Update any subset of fields. Only provided fields are changed.
+
+**Request body** — all fields optional:
+```json
+{
+  "canonical_name": "New Name",
+  "short_description": "Updated description.",
+  "investment_tendency": "lead",
+  "stages": ["seed", "series_a"],
+  "sectors": ["fintech"],
+  "enrichment_status": "pending"
+}
+```
+
+Updatable fields: `canonical_name`, `website`, `investor_type`, `status`, `hq_city`, `hq_country`, `location`, `stages`, `sectors`, `geographies`, `geo_focus`, `rounds`, `description`, `investment_thesis`, `stated_thesis`, `revealed_thesis`, `short_description`, `long_description`, `investment_tendency`, `year_founded`, `first_cheque_min`, `first_cheque_max`, `first_cheque_currency`, `ticket_size_min`, `ticket_size_max`, `enrichment_status`
+
+**Response**
+```json
+{ "updated": ["short_description", "investment_tendency"] }
+```
+
+---
+
+### `GET /investors/{investor_id}/members`
+
+VC investment team (populated after enrichment).
+
+```json
+{
+  "count": 2,
+  "results": [
+    {
+      "name": "Greg Dracon",
+      "position": "General Partner",
+      "expertise": ["Enterprise Software", "Healthcare IT"],
+      "description": "Leads B2B SaaS investments.",
+      "linkedin": "https://linkedin.com/in/gregdracon",
+      "email": "greg@406ventures.com",
+      "joined_at": "2008-01-01"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /investors/{investor_id}/funds`
+
+Named funds the firm has raised (populated after enrichment).
+
+```json
+{
+  "count": 2,
+  "results": [
+    {
+      "fund_name": ".406 Ventures Fund I",
+      "fund_size": 100000000,
+      "fund_size_raw": "$100M",
+      "vintage_year": 2008
+    }
+  ]
+}
+```
 
 ---
 
 ### `GET /investors/{investor_id}/portfolio`
 
-Returns portfolio companies linked to this investor from the **CSV import** (legacy, lower fidelity). For enriched portfolio data use the enrichment complete payload or query Supabase directly.
+Portfolio companies from CSV import (legacy, low fidelity). For enriched portfolio use `GET /enrichment/vc/{vc_id}`.
 
-**Response**
 ```json
 {
   "count": 3,
   "results": [
     {
-      "id": "f1ccd59d-...",
+      "id": "uuid",
       "canonical_name": "Biomason",
-      "website": null,
-      "domain": null,
       "sector": null,
-      "sub_sector": null,
-      "description": null,
       "relationship_type": "portfolio",
-      "investment_stage": null,
-      "investment_round": null,
-      "investment_date": null,
       "confidence_score": 0.7,
       "source": "import"
     }
@@ -311,37 +376,63 @@ Returns portfolio companies linked to this investor from the **CSV import** (leg
 }
 ```
 
-> **Note:** Most fields will be `null` for import-sourced companies. Rich portfolio data (overview, sectors, team, valuation etc.) comes from the enrichment flow and lives in the `portfolio_companies` and `portco_team` tables, not returned by this endpoint yet.
+---
+
+### `GET /investors/{investor_id}/similar`
+
+Investors ranked by overlapping sectors (weight ×3), stages (×2), geographies (×1).
+
+**Query params:** `limit` (default 10, max 50)
+
+```json
+{
+  "count": 5,
+  "results": [
+    {
+      "id": "uuid",
+      "canonical_name": "Accel",
+      "stages": ["seed", "series_a"],
+      "sectors": ["deeptech", "enterprise"],
+      "similarity_score": 8
+    }
+  ]
+}
+```
 
 ---
 
 ### `POST /investors/{investor_id}/mark-for-enrichment`
 
-Flags an investor so the enrichment agent will pick it up next. Sets `enrichment_status = "pending"`.
+Sets `enrichment_status = pending`. No request body.
 
-**No request body required.**
-
-**Response**
 ```json
-{
-  "status": "pending",
-  "investor_id": "b264da2c-..."
-}
+{ "status": "pending", "investor_id": "uuid" }
 ```
 
 ---
 
 ## Enrichment endpoints
 
-These are called by the AI enrichment agent, not typically by the frontend directly. Documented here for completeness and for building admin tooling.
+---
+
+### `GET /enrichment/stats`
+
+```json
+{
+  "not_started": 8480,
+  "pending": 3,
+  "completed": 12,
+  "total": 8495
+}
+```
 
 ---
 
 ### `GET /enrichment/next-vc`
 
-Returns the next investor that needs enrichment. Prioritises `pending` over `not_started`. Uses a database-level lock so multiple agents won't pick the same investor simultaneously.
+Returns the next investor needing enrichment as a `VC` object. Prioritises `pending` over `not_started`. Uses `FOR UPDATE SKIP LOCKED` — safe for concurrent agents.
 
-Returns `404` when there are no investors left to enrich.
+Returns `404` when the queue is empty.
 
 **Response — `VC` object**
 ```json
@@ -352,7 +443,7 @@ Returns `404` when there are no investors left to enrich.
   "long_description": null,
   "stated_thesis": null,
   "revealed_thesis": null,
-  "rounds": ["Seed", "Series A", "Series B"],
+  "rounds": ["Seed", "Series A"],
   "sectors": ["deeptech"],
   "ticket_size_min": null,
   "ticket_size_max": null,
@@ -367,250 +458,47 @@ Returns `404` when there are no investors left to enrich.
 }
 ```
 
-**`VC` field reference**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | integer | `external_vc_id` — use in `/enrichment/vc/{vc_id}/complete` |
-| `name` | string | Canonical name |
-| `short_description` | string \| null | 1–2 sentence summary |
-| `long_description` | string \| null | Full research notes |
-| `stated_thesis` | string \| null | Thesis as stated by the VC |
-| `revealed_thesis` | string \| null | Thesis inferred from portfolio pattern |
-| `rounds` | string[] | Investment stages as human-readable enum values |
-| `sectors` | string[] | Sectors invested in. `["agnostic"]` if sector-agnostic |
-| `ticket_size_min` | number \| null | Minimum cheque size in USD |
-| `ticket_size_max` | number \| null | Maximum cheque size in USD |
-| `tendency` | string \| null | `"lead"` / `"follow_on"` / `"unsure"` |
-| `year_founded` | integer \| null | Year the firm was founded |
-| `funds` | VCFund[] | List of named funds raised |
-| `location` | string \| null | HQ location e.g. `"Boston, United States"` |
-| `geo_focus` | string[] | Countries invested in. `["agnostic"]` if global |
-| `website_url` | string | Firm website |
-| `status` | string \| null | `"Active"` / `"Inactive"` |
-| `slug` | string | URL-safe identifier e.g. `"406-ventures"` |
+The integer `id` is `external_vc_id` — pass it directly to `/enrichment/vc/{vc_id}/complete`.
 
 ---
 
-### `POST /enrichment/vc/{vc_id}/complete`
+### `GET /enrichment/vc/{vc_id}`
 
-Submits enrichment results for a VC. Replaces all enriched data (members, funds, portfolio companies, portco team) and marks the investor as `completed`.
-
-**Path parameter:** `vc_id` — the integer `id` from the `VC` object returned by `/enrichment/next-vc`.
-
-**Request body — `EnrichedVC` object**
+Full enrichment snapshot for an already-enriched investor.
 
 ```json
 {
-  "vc": { },
-  "members": [ ],
-  "portfolio": [ ],
-  "enriched_at": "2026-04-25T12:00:00Z"
-}
-```
-
----
-
-#### `vc` — full `VC` object (see field table above)
-
----
-
-#### `members` — array of `VCMember`
-
-```json
-[
-  {
-    "name": "Greg Dracon",
-    "position": "General Partner",
-    "expertise": ["Enterprise Software", "Healthcare IT"],
-    "description": "Leads investments in B2B SaaS and health tech.",
-    "linkedin": "https://linkedin.com/in/gregdracon",
-    "email": "greg@406ventures.com",
-    "joined_at": "2008-01-01"
-  }
-]
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Full name |
-| `position` | string | Title e.g. `"General Partner"`, `"Principal"` |
-| `expertise` | string[] | Areas of focus e.g. `["deeptech", "climate"]`. Filterable |
-| `description` | string \| null | Notes on investment focus / reasoning |
-| `linkedin` | string \| null | Full LinkedIn URL |
-| `email` | string \| null | Contact email |
-| `joined_at` | string \| null | ISO date string e.g. `"2019-03-01"` |
-
----
-
-#### `portfolio` — array of `PortfolioCompany`
-
-```json
-[
-  {
-    "name": "Veracode",
-    "overview": "Application security testing platform.",
-    "sectors": ["deeptech", "software"],
-    "stages": ["Series A", "Series B"],
-    "status": "exited",
-    "hq": "Burlington, MA",
-    "founded_year": 2006,
-    "company_size": "201-500",
-    "valuation_usd": "$614M",
-    "website_url": "https://veracode.com",
-    "investment_date": "2009-06-01",
-    "team": [
-      {
-        "name": "Sam King",
-        "position": "CEO",
-        "description": "Led Veracode through acquisition.",
-        "linkedin": "https://linkedin.com/in/samking",
-        "email": null
-      }
-    ]
-  }
-]
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Company name |
-| `overview` | string \| null | Short description of what the company does |
-| `sectors` | string[] | Sectors the company operates in. Filterable |
-| `stages` | string[] | Investment stages at which the VC invested e.g. `["Seed", "Series A"]` |
-| `status` | string \| null | `"active"` / `"exited"` |
-| `hq` | string \| null | Headquarters location e.g. `"London, UK"` |
-| `founded_year` | integer \| null | Year company was founded |
-| `company_size` | string \| null | Headcount band e.g. `"1-10"`, `"11-50"`, `"51-200"`, `"201-500"`, `"500+"` |
-| `valuation_usd` | string \| null | Last known valuation as a string e.g. `"$614M"` |
-| `website_url` | string \| null | Company website |
-| `investment_date` | string \| null | ISO date string of investment e.g. `"2019-06-01"` |
-| `team` | PortcoTeamMember[] | Key people at the company |
-
-**`PortcoTeamMember` fields**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Full name |
-| `position` | string \| null | Title e.g. `"CEO"`, `"CTO"` |
-| `description` | string \| null | Optional notes |
-| `linkedin` | string \| null | Full LinkedIn URL |
-| `email` | string \| null | Contact email |
-
----
-
-#### `funds` — array of `VCFund` (nested inside `vc`)
-
-```json
-"funds": [
-  {
-    "fund_name": ".406 Ventures Fund I",
-    "fund_size": 100000000,
-    "fund_size_raw": "$100M",
-    "vintage_year": 2008
-  }
-]
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `fund_name` | string \| null | Name of the fund |
-| `fund_size` | number \| null | Size in USD as a number e.g. `100000000` |
-| `fund_size_raw` | string \| null | Size as found e.g. `"$100M"` |
-| `vintage_year` | integer \| null | Year the fund closed |
-
----
-
-#### `enriched_at` — ISO 8601 datetime string
-
-```json
-"enriched_at": "2026-04-25T12:00:00Z"
-```
-
----
-
-**Complete response**
-```json
-{
-  "status": "completed",
-  "vc_id": 89,
-  "members_updated": 1,
-  "portfolio_updated": 2,
-  "funds_updated": 1
-}
-```
-
----
-
-## Enum reference
-
-### `InvestmentStage` — used in `VC.rounds` and `PortfolioCompany.stages`
-
-| Value | Meaning |
-|-------|---------|
-| `"Pre-Seed"` | |
-| `"Seed"` | |
-| `"Series A"` | |
-| `"Series B"` | |
-| `"Series C"` | |
-| `"Growth"` | Growth / expansion stage |
-| `"Late Stage"` | Late-stage / pre-IPO |
-
-### `VCStatus` — used in `VC.status`
-
-| Value |
-|-------|
-| `"Active"` |
-| `"Inactive"` |
-
-### `InvestmentTendency` — used in `VC.tendency`
-
-| Value | Meaning |
-|-------|---------|
-| `"lead"` | Typically leads rounds |
-| `"follow_on"` | Typically follows others |
-| `"unsure"` | Pattern unclear |
-
-### `PortcoStatus` — used in `PortfolioCompany.status`
-
-| Value |
-|-------|
-| `"active"` |
-| `"exited"` |
-
----
-
-## Pagination pattern
-
-All list endpoints follow the same pattern:
-
-```
-GET /investors?limit=20&offset=0   → page 1
-GET /investors?limit=20&offset=20  → page 2
-GET /investors?limit=20&offset=40  → page 3
-```
-
-The `count` field in the response is the number of results **in this page**, not the total. To detect the last page, check if `count < limit`.
-
----
-
-## Error responses
-
-| HTTP status | Meaning |
-|-------------|---------|
-| `200` | Success |
-| `404` | Resource not found (investor_id or vc_id doesn't exist) |
-| `422` | Validation error — request body failed Pydantic validation. Response includes field-level errors |
-| `500` | Internal server error — check server logs |
-
-**422 example**
-```json
-{
-  "detail": [
+  "investor": {
+    "id": "uuid",
+    "canonical_name": ".406 Ventures",
+    "enrichment_status": "completed",
+    "last_enriched_at": "2026-04-25T21:23:00"
+  },
+  "enriched_at": "2026-04-25T21:23:00",
+  "members": [
     {
-      "loc": ["body", "vc", "rounds", 0],
-      "msg": "value is not a valid enumeration member",
-      "type": "type_error.enum"
+      "name": "Greg Dracon",
+      "position": "General Partner",
+      "expertise": ["Enterprise Software"],
+      "linkedin": "https://linkedin.com/in/gregdracon"
+    }
+  ],
+  "funds": [
+    { "fund_name": ".406 Fund I", "fund_size": 100000000, "vintage_year": 2008 }
+  ],
+  "portfolio": [
+    {
+      "name": "Veracode",
+      "overview": "Application security testing.",
+      "sectors": ["deeptech"],
+      "stages": ["Series A", "Series B"],
+      "status": "exited",
+      "hq": "Burlington, MA",
+      "founded_year": 2006,
+      "valuation_usd": "$614M",
+      "team": [
+        { "name": "Sam King", "position": "CEO" }
+      ]
     }
   ]
 }
@@ -618,10 +506,325 @@ The `count` field in the response is the number of results **in this page**, not
 
 ---
 
-## Data quality notes for frontend
+### `POST /enrichment/vc/{vc_id}/complete`
 
-- `needs_review: true` means the investor was deduplicated by name match only (not domain). Surface a warning badge in the UI.
-- `enrichment_status: "not_started"` means only raw CSV data is available — `rounds`, `short_description`, `stated_thesis` etc. will likely be `null`.
-- `enrichment_status: "completed"` means the agent has run — prefer `rounds` over `stages`, `geo_focus` over `geographies`, `stated_thesis` over `investment_thesis`, `location` over `hq_country`.
-- `source_count > 1` means the investor appeared in multiple datasets — higher confidence record.
-- Cheque sizes: prefer `ticket_size_min/max` (enrichment) over `first_cheque_min/max` (CSV import) when both are present.
+Submit enrichment results. Accepts `DeepEnrichedVC` from the agent pipeline.
+
+**Path param:** `vc_id` — the integer `id` from `GET /enrichment/next-vc`.
+
+**Request body — `DeepEnrichedVC`**
+
+```json
+{
+  "vc": { },
+  "profile": { },
+  "team": [ ],
+  "portfolio": [ ],
+  "revealed_thesis": { },
+  "enriched_at": "2026-04-25T12:00:00Z",
+  "depth": "standard",
+  "branch_traces": [ ]
+}
+```
+
+---
+
+#### `vc` — `VC` object (same shape returned by `next-vc`)
+
+```json
+{
+  "id": 89,
+  "name": ".406 Ventures",
+  "rounds": ["Seed", "Series A"],
+  "sectors": ["deeptech", "enterprise"],
+  "tendency": "lead",
+  "year_founded": 2008,
+  "funds": [
+    { "name": ".406 Fund I", "size_usd": 100000000, "vintage_year": 2008 }
+  ],
+  "location": "Boston, United States",
+  "geo_focus": ["United States"],
+  "website_url": "https://406ventures.com",
+  "status": "Active",
+  "slug": "406-ventures"
+}
+```
+
+---
+
+#### `profile` — `EnrichedVCProfile`
+
+```json
+{
+  "identity": {
+    "short_description": "Early-stage B2B and deep tech investor.",
+    "long_description": "Founded by former operators...",
+    "stated_thesis": "We back founders building the future of enterprise.",
+    "year_founded": 2008,
+    "hq": "Boston, United States",
+    "website_url": "https://406ventures.com"
+  },
+  "preferences": {
+    "stages": ["Seed", "Series A"],
+    "sectors": ["deeptech", "enterprise"],
+    "ticket_size": {
+      "minimum_usd": 500000,
+      "maximum_usd": 5000000,
+      "currency": "USD"
+    },
+    "tendency": "lead",
+    "geo_focus": ["United States"],
+    "funds": [
+      { "name": ".406 Fund I", "size_usd": 100000000, "vintage_year": 2008 }
+    ]
+  },
+  "source": {
+    "url": "https://406ventures.com/about",
+    "source_type": "vc_website",
+    "extracted_at": "2026-04-25T12:00:00Z"
+  }
+}
+```
+
+**`identity` field mapping → `investors` table**
+
+| Agent field | DB column |
+|-------------|-----------|
+| `short_description` | `short_description` |
+| `long_description` | `long_description` |
+| `stated_thesis` | `stated_thesis` |
+| `year_founded` | `year_founded` |
+| `hq` | `location` |
+| `website_url` | `website_url` |
+
+**`preferences` field mapping → `investors` table**
+
+| Agent field | DB column |
+|-------------|-----------|
+| `stages` | `rounds` (TEXT[]) |
+| `sectors` | `sectors` (TEXT[]) |
+| `ticket_size.minimum_usd` | `ticket_size_min` |
+| `ticket_size.maximum_usd` | `ticket_size_max` |
+| `ticket_size.currency` | `first_cheque_currency` |
+| `tendency` | `investment_tendency` |
+| `geo_focus` | `geo_focus` (TEXT[]) |
+| `funds[].name` | `vc_funds.fund_name` |
+| `funds[].size_usd` | `vc_funds.fund_size` |
+| `funds[].vintage_year` | `vc_funds.vintage_year` |
+
+---
+
+#### `team` — `list[EnrichedVCMember]`
+
+```json
+[
+  {
+    "name": "Greg Dracon",
+    "position": "General Partner",
+    "area_of_expertise": "Enterprise Software",
+    "description": "Leads B2B SaaS investments.",
+    "linkedin": "https://linkedin.com/in/gregdracon",
+    "email": "greg@406ventures.com",
+    "joined_at": "2008-01-01",
+    "source": { "url": "...", "source_type": "vc_website", "extracted_at": "..." }
+  }
+]
+```
+
+**Field mapping → `vc_members` table**
+
+| Agent field | DB column |
+|-------------|-----------|
+| `name` | `name` |
+| `position` | `position` |
+| `area_of_expertise` | `expertise` (stored as single-element array) |
+| `description` | `description` |
+| `linkedin` | `linkedin` |
+| `email` | `email` |
+| `joined_at` | `joined_at` |
+
+---
+
+#### `portfolio` — `list[EnrichedPortfolioCompany]`
+
+```json
+[
+  {
+    "name": "Veracode",
+    "overview": "Application security testing platform.",
+    "investment_stage": "Series B",
+    "sectors": ["deeptech", "software"],
+    "status": "exited",
+    "hq": "Burlington, MA",
+    "founded_in": 2006,
+    "company_size": "201-500",
+    "valuation": "$614M",
+    "website_url": "https://veracode.com",
+    "executives": [
+      {
+        "name": "Sam King",
+        "position": "CEO",
+        "description": "Led Veracode through acquisition.",
+        "linkedin": "https://linkedin.com/in/samking",
+        "email": null,
+        "source": { "url": "...", "source_type": "portco_website", "extracted_at": "..." }
+      }
+    ],
+    "source": { "url": "...", "source_type": "vc_website", "extracted_at": "..." }
+  }
+]
+```
+
+**Field mapping → `portfolio_companies` table**
+
+| Agent field | DB column |
+|-------------|-----------|
+| `name` | `name` |
+| `overview` | `overview` |
+| `investment_stage` | `stage` (wrapped as single-element array) |
+| `sectors` | `sectors` (TEXT[]) |
+| `status` | `status` |
+| `hq` | `hq` |
+| `founded_in` | `founded_year` |
+| `company_size` | `company_size` |
+| `valuation` | `valuation_usd` |
+| `website_url` | `website_url` |
+| `executives` | `portco_team` rows |
+
+---
+
+#### `revealed_thesis` — `RevealedThesis`
+
+```json
+{
+  "summary": "Strong focus on developer-tooling and security despite generalist stated thesis.",
+  "inferred_sectors": ["deeptech", "software"],
+  "inferred_stages": ["Seed", "Series A"],
+  "inferred_geo_focus": ["United States"],
+  "source": { "url": "...", "source_type": "web_search", "extracted_at": "..." }
+}
+```
+
+Stored in `investors.revealed_thesis` (summary text) and `investors.revealed_thesis_json` (full object — pending migration).
+
+---
+
+#### `depth` and `branch_traces`
+
+```json
+"depth": "standard",
+"branch_traces": [
+  {
+    "target_label": "vc_profile:406-ventures",
+    "primary_url": "https://406ventures.com/about",
+    "fallback_used": false,
+    "fallback_query": null,
+    "selected_source": { "url": "...", "source_type": "vc_website", "extracted_at": "..." }
+  }
+]
+```
+
+Both stored in `vc_enrichments` (`depth TEXT`, `branch_traces JSONB`) — pending migration.
+
+---
+
+**Response**
+```json
+{
+  "status": "completed",
+  "vc_id": 89,
+  "members_updated": 2,
+  "portfolio_updated": 4,
+  "funds_updated": 2
+}
+```
+
+---
+
+## Enum reference
+
+### `InvestmentStage` — `VC.rounds`, `PortfolioCompany.stages`
+
+`"Pre-Seed"` `"Seed"` `"Series A"` `"Series B"` `"Series C"` `"Growth"` `"Late Stage"`
+
+### `VCStatus` — `VC.status`
+
+`"Active"` `"Inactive"`
+
+### `InvestmentTendency` — `VC.tendency`
+
+`"lead"` `"follow_on"` `"unsure"`
+
+### `PortcoStatus` — `PortfolioCompany.status`
+
+`"active"` `"exited"`
+
+### `SourceType` — `SourceInfo.source_type`
+
+`"vc_data_service"` `"vc_website"` `"portco_website"` `"web_search"`
+
+### `DepthLevel` — `DeepEnrichedVC.depth`
+
+`"quick"` `"standard"` `"deep"`
+
+---
+
+## Stage filter values (for `GET /investors/search`)
+
+These are the **internal normalised values** stored in `investors.stages`. Use these exact strings when filtering.
+
+`idea` `prototype` `pre_seed` `seed` `early_revenue` `series_a` `series_b` `series_c` `growth` `buyout` `secondary` `infrastructure`
+
+---
+
+## Sector filter values (for `GET /investors/search`)
+
+`fintech` `software` `deeptech` `healthcare` `consumer` `b2b` `ecommerce` `climate` `infrastructure` `real_estate` `industrial` `media` `logistics` `generalist`
+
+---
+
+## Pagination
+
+```
+GET /investors?limit=20&offset=0   → page 1
+GET /investors?limit=20&offset=20  → page 2
+```
+
+`count` in the response is results in this page, not total. Last page when `count < limit`.
+
+---
+
+## Error responses
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `201` | Created (POST /investors) |
+| `400` | Bad request — no valid fields to update |
+| `404` | Resource not found |
+| `409` | Conflict — duplicate domain on investor create |
+| `422` | Validation error — body failed Pydantic validation |
+| `500` | Internal server error |
+
+---
+
+## Data quality guidance
+
+- Prefer `rounds` over `stages` — `rounds` is enrichment-sourced and human-readable; `stages` is raw CSV
+- Prefer `geo_focus` over `geographies` — same reason
+- Prefer `stated_thesis` over `investment_thesis` — cleaned vs raw
+- Prefer `ticket_size_min/max` over `first_cheque_min/max` — enrichment vs CSV
+- `needs_review: true` → deduplicated by name only, surface a warning in UI
+- `enrichment_status: not_started` → only CSV data available, narrative fields will be null
+- `source_count > 1` → appeared in multiple datasets, higher confidence record
+
+---
+
+## Pending schema changes
+
+Two small migrations needed to fully support `DeepEnrichedVC`:
+
+1. `investors.revealed_thesis_json JSONB` — stores full `RevealedThesis` object
+2. `vc_enrichments.depth TEXT` and `vc_enrichments.branch_traces JSONB` — stores pipeline audit trail
+
+The `POST /enrichment/vc/{vc_id}/complete` endpoint will be updated to write these fields once the migration is applied.

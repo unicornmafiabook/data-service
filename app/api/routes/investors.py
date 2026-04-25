@@ -359,6 +359,30 @@ def get_similar(investor_id: str, limit: int = Query(10, le=50), db: Session = D
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
+# ── Delete ───────────────────────────────────────────────────────────────────
+
+@router.delete("/{investor_id}", status_code=200)
+def delete_investor(investor_id: str, db: Session = Depends(get_db)):
+    investor = db.execute(
+        text("SELECT id, external_vc_id FROM investors WHERE id = :id"),
+        {"id": investor_id},
+    ).mappings().first()
+    if not investor:
+        raise HTTPException(404, "Investor not found")
+
+    # enrichment_runs uses a polymorphic target_id with no FK — delete manually
+    db.execute(
+        text("DELETE FROM enrichment_runs WHERE target_type = 'investor' AND target_id = :id"),
+        {"id": investor_id},
+    )
+
+    # FK cascades handle: investor_sources, investor_company_relationships,
+    # dedupe_candidates, vc_members, vc_funds, portfolio_companies (→ portco_team), vc_enrichments
+    db.execute(text("DELETE FROM investors WHERE id = :id"), {"id": investor_id})
+    db.commit()
+    return {"deleted": investor_id, "external_vc_id": investor["external_vc_id"]}
+
+
 # ── Mark for enrichment ───────────────────────────────────────────────────────
 
 @router.post("/{investor_id}/mark-for-enrichment")
