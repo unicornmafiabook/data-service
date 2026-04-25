@@ -255,3 +255,75 @@ def complete_enrichment(vc_id: int, payload: EnrichedVC, db: Session = Depends(g
         "portfolio_updated": len(payload.portfolio),
         "funds_updated":     len(vc.funds),
     }
+
+
+# ── Enrichment snapshot for a VC ──────────────────────────────────────────────
+
+@router.get("/vc/{vc_id}")
+def get_enrichment(vc_id: int, db: Session = Depends(get_db)):
+    investor = db.execute(text("""
+        SELECT id, canonical_name, enrichment_status, last_enriched_at
+        FROM investors WHERE external_vc_id = :vc_id
+    """), {"vc_id": vc_id}).mappings().first()
+    if not investor:
+        raise HTTPException(404, f"No investor with vc_id={vc_id}")
+
+    snapshot = db.execute(text("""
+        SELECT enriched_at, raw_payload, updated_at
+        FROM vc_enrichments WHERE vc_id = :vc_id
+    """), {"vc_id": vc_id}).mappings().first()
+
+    members = db.execute(text("""
+        SELECT name, position, expertise, description, linkedin, email, joined_at
+        FROM vc_members WHERE vc_id = :vc_id ORDER BY name
+    """), {"vc_id": vc_id}).mappings().all()
+
+    funds = db.execute(text("""
+        SELECT fund_name, fund_size, fund_size_raw, vintage_year
+        FROM vc_funds WHERE vc_id = :vc_id ORDER BY vintage_year NULLS LAST
+    """), {"vc_id": vc_id}).mappings().all()
+
+    portfolio = db.execute(text("""
+        SELECT pc.name, pc.overview, pc.sectors, pc.stage AS stages,
+               pc.status, pc.hq, pc.founded_year, pc.company_size,
+               pc.valuation_usd, pc.website_url, pc.investment_date,
+               COALESCE(
+                   json_agg(
+                       json_build_object(
+                           'name', pt.name,
+                           'position', pt.position,
+                           'linkedin', pt.linkedin,
+                           'email', pt.email
+                       )
+                   ) FILTER (WHERE pt.id IS NOT NULL),
+                   '[]'
+               ) AS team
+        FROM portfolio_companies pc
+        LEFT JOIN portco_team pt ON pt.portfolio_company_id = pc.id
+        WHERE pc.vc_id = :vc_id
+        GROUP BY pc.id
+        ORDER BY pc.name
+    """), {"vc_id": vc_id}).mappings().all()
+
+    return {
+        "investor":       dict(investor),
+        "enriched_at":    snapshot["enriched_at"] if snapshot else None,
+        "members":        [dict(r) for r in members],
+        "funds":          [dict(r) for r in funds],
+        "portfolio":      [dict(r) for r in portfolio],
+    }
+
+
+# ── Enrichment queue stats ────────────────────────────────────────────────────
+
+@router.get("/stats")
+def enrichment_stats(db: Session = Depends(get_db)):
+    row = db.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE enrichment_status = 'not_started') AS not_started,
+            COUNT(*) FILTER (WHERE enrichment_status = 'pending')     AS pending,
+            COUNT(*) FILTER (WHERE enrichment_status = 'completed')   AS completed,
+            COUNT(*)                                                   AS total
+        FROM investors
+    """)).mappings().first()
+    return dict(row)
