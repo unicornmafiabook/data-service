@@ -9,18 +9,17 @@ from app.models.enrichment import EnrichedVC, VC, VCStatus
 
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
 
-# Maps internal stage keys to InvestmentStage enum values
 _STAGE_TO_ENUM = {
     "pre_seed": "Pre-Seed",
-    "seed": "Seed",
+    "seed":     "Seed",
     "series_a": "Series A",
     "series_b": "Series B",
     "series_c": "Series C",
-    "growth": "Growth",
+    "growth":   "Growth",
 }
 
 _STATUS_MAP = {
-    "active": VCStatus.ACTIVE,
+    "active":   VCStatus.ACTIVE,
     "inactive": VCStatus.INACTIVE,
 }
 
@@ -31,28 +30,44 @@ def _map_status(raw: str | None) -> VCStatus | None:
     return _STATUS_MAP.get(raw.lower())
 
 
-def _row_to_vc(row) -> dict:
-    # Prefer pre-computed rounds column; fall back to deriving from stages
+def _row_to_vc(row, funds: list) -> dict:
     rounds = list(row["rounds"] or [])
     if not rounds:
         rounds = [_STAGE_TO_ENUM[s] for s in (row["stages"] or []) if s in _STAGE_TO_ENUM]
+
     return {
-        "id": row["external_vc_id"],
-        "name": row["canonical_name"],
-        "rounds": rounds,
-        "location": row["location"],
-        "sector": row["sector"],
-        "website_url": row["website_url"] or row["website"] or "",
-        "status": _map_status(row["status"]),
-        "slug": row["slug"] or "",
+        "id":                row["external_vc_id"],
+        "name":              row["canonical_name"],
+        "short_description": row["short_description"],
+        "long_description":  row["long_description"],
+        "stated_thesis":     row["stated_thesis"] or row["investment_thesis"],
+        "revealed_thesis":   row["revealed_thesis"],
+        "rounds":            rounds,
+        "sectors":           list(row["sectors"] or []),
+        "ticket_size_min":   row["ticket_size_min"] or row["first_cheque_min"],
+        "ticket_size_max":   row["ticket_size_max"] or row["first_cheque_max"],
+        "tendency":          row["investment_tendency"],
+        "year_founded":      row["year_founded"],
+        "funds":             [dict(f) for f in funds],
+        "location":          row["location"],
+        "geo_focus":         list(row["geo_focus"] or row["geographies"] or []),
+        "website_url":       row["website_url"] or row["website"] or "",
+        "status":            _map_status(row["status"]),
+        "slug":              row["slug"] or "",
     }
 
 
 @router.get("/next-vc", response_model=VC)
 def get_next_vc(db: Session = Depends(get_db)):
     row = db.execute(text("""
-        SELECT external_vc_id, canonical_name, stages, rounds,
-               location, sector, website_url, website, status, slug
+        SELECT external_vc_id, canonical_name,
+               stages, rounds, sectors, geographies, geo_focus,
+               short_description, long_description,
+               investment_thesis, stated_thesis, revealed_thesis,
+               investment_tendency, year_founded,
+               ticket_size_min, ticket_size_max,
+               first_cheque_min, first_cheque_max,
+               location, website_url, website, status, slug
         FROM investors
         WHERE enrichment_status IN ('not_started', 'pending')
           AND external_vc_id IS NOT NULL
@@ -64,7 +79,14 @@ def get_next_vc(db: Session = Depends(get_db)):
     """)).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="No investors pending enrichment")
-    return _row_to_vc(row)
+
+    funds = db.execute(text("""
+        SELECT fund_name, fund_size, fund_size_raw, vintage_year
+        FROM vc_funds WHERE vc_id = :vc_id
+        ORDER BY vintage_year NULLS LAST
+    """), {"vc_id": row["external_vc_id"]}).mappings().all()
+
+    return _row_to_vc(row, list(funds))
 
 
 @router.post("/vc/{vc_id}/complete")
@@ -77,55 +99,125 @@ def complete_enrichment(vc_id: int, payload: EnrichedVC, db: Session = Depends(g
     investor_uuid = investor["id"]
 
     vc = payload.vc
-    rounds = [r.value for r in vc.rounds]
 
-    # Update canonical investor row
+    # ── Update investors ──────────────────────────────────────────────────────
     db.execute(text("""
         UPDATE investors SET
-            canonical_name      = :name,
-            rounds              = :rounds,
-            location            = :location,
-            sector              = :sector,
-            website_url         = :website_url,
-            status              = :status,
-            slug                = :slug,
-            enrichment_status   = 'completed',
-            last_enriched_at    = NOW()
+            canonical_name       = :name,
+            short_description    = :short_description,
+            long_description     = :long_description,
+            stated_thesis        = :stated_thesis,
+            revealed_thesis      = :revealed_thesis,
+            rounds               = :rounds,
+            sectors              = :sectors,
+            ticket_size_min      = :ticket_size_min,
+            ticket_size_max      = :ticket_size_max,
+            investment_tendency  = :tendency,
+            year_founded         = :year_founded,
+            geo_focus            = :geo_focus,
+            location             = :location,
+            website_url          = :website_url,
+            status               = :status,
+            slug                 = :slug,
+            enrichment_status    = 'completed',
+            last_enriched_at     = NOW()
         WHERE external_vc_id = :vc_id
     """), {
-        "vc_id":       vc_id,
-        "name":        vc.name,
-        "rounds":      rounds,
-        "location":    vc.location,
-        "sector":      vc.sector,
-        "website_url": str(vc.website_url),
-        "status":      vc.status.value if vc.status else None,
-        "slug":        vc.slug,
+        "vc_id":             vc_id,
+        "name":              vc.name,
+        "short_description": vc.short_description,
+        "long_description":  vc.long_description,
+        "stated_thesis":     vc.stated_thesis,
+        "revealed_thesis":   vc.revealed_thesis,
+        "rounds":            [r.value for r in vc.rounds],
+        "sectors":           vc.sectors,
+        "ticket_size_min":   vc.ticket_size_min,
+        "ticket_size_max":   vc.ticket_size_max,
+        "tendency":          vc.tendency.value if vc.tendency else None,
+        "year_founded":      vc.year_founded,
+        "geo_focus":         vc.geo_focus,
+        "location":          vc.location,
+        "website_url":       str(vc.website_url),
+        "status":            vc.status.value if vc.status else None,
+        "slug":              vc.slug,
     })
 
-    # Replace vc_members
+    # ── Replace vc_members ────────────────────────────────────────────────────
     db.execute(text("DELETE FROM vc_members WHERE vc_id = :vc_id"), {"vc_id": vc_id})
-    for member in payload.members:
+    for m in payload.members:
         db.execute(text("""
-            INSERT INTO vc_members (vc_id, name, role) VALUES (:vc_id, :name, :role)
-        """), {"vc_id": vc_id, "name": member.name, "role": member.role})
+            INSERT INTO vc_members
+                (vc_id, name, position, expertise, description, linkedin, email, joined_at)
+            VALUES
+                (:vc_id, :name, :position, :expertise, :description, :linkedin, :email, :joined_at)
+        """), {
+            "vc_id":       vc_id,
+            "name":        m.name,
+            "position":    m.position,
+            "expertise":   m.expertise,
+            "description": m.description,
+            "linkedin":    m.linkedin,
+            "email":       m.email,
+            "joined_at":   m.joined_at,
+        })
 
-    # Replace portfolio_companies
+    # ── Replace vc_funds ──────────────────────────────────────────────────────
+    db.execute(text("DELETE FROM vc_funds WHERE vc_id = :vc_id"), {"vc_id": vc_id})
+    for f in vc.funds:
+        db.execute(text("""
+            INSERT INTO vc_funds (vc_id, fund_name, fund_size, fund_size_raw, vintage_year)
+            VALUES (:vc_id, :fund_name, :fund_size, :fund_size_raw, :vintage_year)
+        """), {
+            "vc_id":        vc_id,
+            "fund_name":    f.fund_name,
+            "fund_size":    f.fund_size,
+            "fund_size_raw": f.fund_size_raw,
+            "vintage_year": f.vintage_year,
+        })
+
+    # ── Replace portfolio_companies (cascade deletes portco_team) ─────────────
     db.execute(text("DELETE FROM portfolio_companies WHERE vc_id = :vc_id"), {"vc_id": vc_id})
     for company in payload.portfolio:
-        db.execute(text("""
-            INSERT INTO portfolio_companies (vc_id, name, sector, stage, investment_date, valuation_usd)
-            VALUES (:vc_id, :name, :sector, :stage, :investment_date, :valuation_usd)
+        row = db.execute(text("""
+            INSERT INTO portfolio_companies
+                (vc_id, name, overview, sectors, stage, status,
+                 hq, founded_year, company_size, valuation_usd, website_url, investment_date)
+            VALUES
+                (:vc_id, :name, :overview, :sectors, :stage, :status,
+                 :hq, :founded_year, :company_size, :valuation_usd, :website_url, :investment_date)
+            RETURNING id
         """), {
             "vc_id":           vc_id,
             "name":            company.name,
-            "sector":          company.sector,
+            "overview":        company.overview,
+            "sectors":         company.sectors,
             "stage":           company.stage.value if company.stage else None,
-            "investment_date": company.investment_date,
+            "status":          company.status.value if company.status else None,
+            "hq":              company.hq,
+            "founded_year":    company.founded_year,
+            "company_size":    company.company_size,
             "valuation_usd":   company.valuation_usd,
+            "website_url":     company.website_url,
+            "investment_date": company.investment_date,
         })
+        company_id = str(row.scalar())
 
-    # Upsert vc_enrichments
+        for tm in company.team:
+            db.execute(text("""
+                INSERT INTO portco_team
+                    (portfolio_company_id, name, position, description, linkedin, email)
+                VALUES
+                    (:pcid, :name, :position, :description, :linkedin, :email)
+            """), {
+                "pcid":        company_id,
+                "name":        tm.name,
+                "position":    tm.position,
+                "description": tm.description,
+                "linkedin":    tm.linkedin,
+                "email":       tm.email,
+            })
+
+    # ── Upsert vc_enrichments ─────────────────────────────────────────────────
     db.execute(text("""
         INSERT INTO vc_enrichments (vc_id, enriched_at, raw_payload)
         VALUES (:vc_id, :enriched_at, CAST(:raw_payload AS jsonb))
@@ -139,7 +231,7 @@ def complete_enrichment(vc_id: int, payload: EnrichedVC, db: Session = Depends(g
         "raw_payload": json.dumps(payload.model_dump(mode="json")),
     })
 
-    # Log to enrichment_runs
+    # ── Log to enrichment_runs ────────────────────────────────────────────────
     db.execute(text("""
         INSERT INTO enrichment_runs
             (target_type, target_id, status, completed_at, output_json)
@@ -151,6 +243,7 @@ def complete_enrichment(vc_id: int, payload: EnrichedVC, db: Session = Depends(g
             "vc_id":           vc_id,
             "members_count":   len(payload.members),
             "portfolio_count": len(payload.portfolio),
+            "funds_count":     len(vc.funds),
         }),
     })
 
@@ -160,4 +253,5 @@ def complete_enrichment(vc_id: int, payload: EnrichedVC, db: Session = Depends(g
         "vc_id":             vc_id,
         "members_updated":   len(payload.members),
         "portfolio_updated": len(payload.portfolio),
+        "funds_updated":     len(vc.funds),
     }
