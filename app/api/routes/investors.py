@@ -397,17 +397,3 @@ def delete_investor(investor_id: str, db: Session = Depends(get_db)):
     return {"deleted": investor_id, "external_vc_id": investor["external_vc_id"]}
 
 
-# ── Mark for enrichment ───────────────────────────────────────────────────────
-
-@router.post("/{investor_id}/mark-for-enrichment")
-def mark_for_enrichment(investor_id: str, db: Session = Depends(get_db)):
-    result = db.execute(text("""
-        UPDATE investors
-        SET enrichment_status = 'pending'
-        WHERE id = :id
-        RETURNING id
-    """), {"id": investor_id})
-    if not result.scalar():
-        raise HTTPException(404, "Investor not found")
-    db.commit()
-    return {"status": "pending", "investor_id": investor_id}
