@@ -86,7 +86,7 @@ def test_post_investors_creates_and_returns_vc(client: TestClient) -> None:
     assert response.json()["slug"] == "acme-ventures"
 
 
-# ── GET /investors/list ───────────────────────────────────────────────────────
+# ── GET /investors/search ─────────────────────────────────────────────────────
 
 def test_get_investors_lists_paginated_returns_array(
     client: TestClient, session: Session,
@@ -95,7 +95,7 @@ def test_get_investors_lists_paginated_returns_array(
     _seed_three_investors(session)
 
     # Act
-    response = client.get("/investors/list", params={"limit": 2, "offset": 0})
+    response = client.get("/investors/search", params={"limit": 2, "offset": 0})
 
     # Assert
     assert response.status_code == 200

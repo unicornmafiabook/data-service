@@ -15,11 +15,8 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(new_investors_router)
-app.include_router(ingest_router)
 app.include_router(enrichment_router)
 app.include_router(new_enrichment_router)
-app.include_router(indexing_router)
-app.include_router(matching_router)
 
 
 @app.get("/")
