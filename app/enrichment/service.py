@@ -59,26 +59,26 @@ class EnrichmentService:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def get_snapshot(self, external_vc_id: int) -> EnrichmentSnapshot:
-        investor = _require_investor(self._session, external_vc_id)
-        return _build_snapshot(self._session, investor, external_vc_id)
+    def get_snapshot(self, slug: str) -> EnrichmentSnapshot:
+        investor = _require_investor_by_slug(self._session, slug)
+        return _build_snapshot(self._session, investor, investor.external_vc_id)
 
     def create_enrichment(
         self, external_vc_id: int, payload: DeepEnrichedVC,
     ) -> EnrichmentSnapshot:
-        _require_investor(self._session, external_vc_id)
+        investor = _require_investor(self._session, external_vc_id)
         _reject_existing_enrichment(self._session, external_vc_id)
         _write_enrichment(self._session, external_vc_id, payload)
-        return self.get_snapshot(external_vc_id)
+        return _build_snapshot(self._session, investor, external_vc_id)
 
     def update_enrichment(
         self, external_vc_id: int, payload: DeepEnrichedVC,
     ) -> EnrichmentSnapshot:
-        _require_investor(self._session, external_vc_id)
+        investor = _require_investor(self._session, external_vc_id)
         _require_existing_enrichment(self._session, external_vc_id)
         _delete_children(self._session, external_vc_id)
         _write_enrichment(self._session, external_vc_id, payload)
-        return self.get_snapshot(external_vc_id)
+        return _build_snapshot(self._session, investor, external_vc_id)
 
     def complete_enrichment(
         self, external_vc_id: int, payload: DeepEnrichedVC,
@@ -102,6 +102,14 @@ def _require_investor(session: Session, external_vc_id: int) -> Investor:
 def _fetch_investor(session: Session, external_vc_id: int) -> Investor | None:
     statement = select(Investor).where(Investor.external_vc_id == external_vc_id)
     return session.exec(statement).first()
+
+
+def _require_investor_by_slug(session: Session, slug: str) -> Investor:
+    statement = select(Investor).where(Investor.slug == slug)
+    investor = session.exec(statement).first()
+    if investor is None:
+        raise InvestorNotFoundError(f"No investor with slug={slug}")
+    return investor
 
 
 def _enrichment_exists(session: Session, external_vc_id: int) -> bool:
@@ -130,8 +138,10 @@ def _require_existing_enrichment(session: Session, external_vc_id: int) -> None:
 # ── snapshot building ─────────────────────────────────────────────────────────
 
 def _build_snapshot(
-    session: Session, investor: Investor, external_vc_id: int,
+    session: Session, investor: Investor, external_vc_id: int | None,
 ) -> EnrichmentSnapshot:
+    if external_vc_id is None:
+        return EnrichmentSnapshot(investor=_investor_summary(investor))
     members = _fetch_members(session, external_vc_id)
     funds = _fetch_funds(session, external_vc_id)
     portfolio = _fetch_portfolio_with_team(session, external_vc_id)

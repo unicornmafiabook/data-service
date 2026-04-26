@@ -160,7 +160,7 @@ def test_get_investors_by_external_vc_id_returns_404_when_missing(
 
 # ── GET /investors/by-slug-v2/{slug} ──────────────────────────────────────────
 
-def test_get_investors_by_slug_returns_matching_vc(
+def test_get_investors_by_slug_returns_enrichment_snapshot(
     client: TestClient, session: Session,
 ) -> None:
     # Arrange
@@ -171,7 +171,9 @@ def test_get_investors_by_slug_returns_matching_vc(
 
     # Assert
     assert response.status_code == 200
-    assert response.json()["slug"] == "acme-ventures"
+    body = response.json()
+    assert body["investor"]["canonical_name"]
+    assert body["members"] == [] and body["funds"] == [] and body["portfolio"] == []
 
 
 def test_get_investors_by_slug_returns_404_when_missing(client: TestClient) -> None:

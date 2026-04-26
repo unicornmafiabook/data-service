@@ -49,12 +49,12 @@ def test_enrichment_service_get_snapshot_raises_when_investor_missing(
     session: Session,
 ) -> None:
     # Arrange
-    missing_external_vc_id = 999_999
+    missing_slug = "missing-vc"
     service = EnrichmentService(session)
 
     # Act / Assert
     with pytest.raises(InvestorNotFoundError):
-        service.get_snapshot(missing_external_vc_id)
+        service.get_snapshot(missing_slug)
 
 
 # ── get_snapshot — empty case ─────────────────────────────────────────────────
@@ -67,7 +67,7 @@ def test_enrichment_service_get_snapshot_returns_investor_summary_when_no_enrich
     _create_investor(session, external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).get_snapshot(external_vc_id)
+    snapshot = EnrichmentService(session).get_snapshot(f"vc-{external_vc_id}")
 
     # Assert
     assert snapshot.enriched_at is None
@@ -84,7 +84,7 @@ def test_enrichment_service_get_snapshot_returns_seeded_members_funds_and_portfo
     _seed_enriched_vc(session, external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).get_snapshot(external_vc_id)
+    snapshot = EnrichmentService(session).get_snapshot(f"vc-{external_vc_id}")
 
     # Assert
     counts = (len(snapshot.members), len(snapshot.funds), len(snapshot.portfolio))
@@ -101,7 +101,7 @@ def test_enrichment_service_get_snapshot_returns_team_as_list_when_portco_has_no
     _seed_portco_without_team(session, external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).get_snapshot(external_vc_id)
+    snapshot = EnrichmentService(session).get_snapshot(f"vc-{external_vc_id}")
 
     # Assert
     first_company = snapshot.portfolio[0]
@@ -116,7 +116,7 @@ def test_enrichment_service_get_snapshot_returns_team_as_list_of_dicts_when_team
     _seed_enriched_vc(session, external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).get_snapshot(external_vc_id)
+    snapshot = EnrichmentService(session).get_snapshot(f"vc-{external_vc_id}")
 
     # Assert
     expected_keys = {"name", "position", "linkedin", "email"}

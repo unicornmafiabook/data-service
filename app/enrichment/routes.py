@@ -18,15 +18,15 @@ from app.enrichment.service import (
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
 
 
-@router.get("/vc/{external_vc_id}", response_model=EnrichmentSnapshot)
+@router.get("/vc/by-slug/{slug}", response_model=EnrichmentSnapshot)
 def get_enrichment(
-    external_vc_id: int,
+    slug: str,
     db: Session = Depends(get_db),
 ) -> EnrichmentSnapshot:
-    """Return the full enrichment snapshot for the given VC."""
+    """Return the full enrichment snapshot for the investor with the given slug."""
     service = EnrichmentService(db)
     try:
-        return service.get_snapshot(external_vc_id)
+        return service.get_snapshot(slug)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
