@@ -49,3 +49,16 @@ class VC(BaseModel):
     website_url: str
     status: VCStatus | None = None
     slug: str
+
+
+class InvestorCreate(BaseModel):
+    """Request body for creating a new investor."""
+
+    canonical_name: str
+    slug: str
+    website_url: str
+    external_vc_id: int | None = None
+    location: str | None = None
+    sector: str | None = None
+    rounds: list[InvestmentStage] = []
+    status: VCStatus | None = None
