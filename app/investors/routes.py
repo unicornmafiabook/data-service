@@ -28,10 +28,14 @@ from app.enrichment.service import (
     EnrichmentService,
     InvestorNotFoundError as EnrichmentInvestorNotFoundError,
 )
+import logging
 from app.investors.service import (
     InvestorNotFoundError,
     InvestorsService,
 )
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/investors", tags=["investors"])
 
@@ -81,7 +85,9 @@ def get_investor_by_slug(
 ) -> EnrichmentSnapshot:
     """Return the enrichment snapshot for the investor with the given slug."""
     try:
-        return EnrichmentService(db).get_snapshot(slug)
+        result = EnrichmentService(db).get_snapshot(slug)
+        logger.info(f"Found enrichment snapshot for slug '{slug}': {result}")
+        return result
     except EnrichmentInvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
