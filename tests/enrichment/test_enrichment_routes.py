@@ -162,13 +162,13 @@ def _make_base_vc(*, external_vc_id: int) -> VC:
 
 def _post_create(
     client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
-):
+) -> Response:
     body = payload.model_dump(mode="json")
     return client.post(f"/enrichment/vc/{external_vc_id}/create", json=body)
 
 
 def _put_update(
     client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
-):
+) -> Response:
     body = payload.model_dump(mode="json")
     return client.put(f"/enrichment/vc/{external_vc_id}", json=body)
