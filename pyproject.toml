@@ -1,0 +1,22 @@
+[project]
+name = "data-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.18.4",
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
+    "pandas>=3.0.2",
+    "psycopg2-binary>=2.9.12",
+    "pydantic>=2.13.3",
+    "pydantic-ai-slim[google]>=1.16.0",
+    "pydantic-settings>=2.14.0",
+    "python-dotenv>=1.2.2",
+    "rapidfuzz>=3.14.5",
+    "sqlalchemy>=2.0.36",
+    "sqlmodel>=0.0.38",
+    "tldextract>=5.3.1",
+    "uvicorn[standard]>=0.32.1",
+]
