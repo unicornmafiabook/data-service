@@ -23,6 +23,8 @@ from app.investors.schemas import (
     InvestorSearchBody,
     InvestorSummary,
 )
+from app.enrichment.schemas import EnrichmentSnapshot
+from app.enrichment.service import EnrichmentService
 from app.investors.service import (
     InvestorNotFoundError,
     InvestorsService,
@@ -69,17 +71,23 @@ def get_investor_by_external_vc_id(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
-@router.get("/by-slug-v2/{slug}", response_model=VC)
+@router.get("/by-slug-v2/{slug}", response_model=EnrichmentSnapshot)
 def get_investor_by_slug(
     slug: str,
     db: Session = Depends(get_db),
-) -> VC:
-    """Return the investor with the given slug."""
-    service = InvestorsService(db)
+) -> EnrichmentSnapshot:
+    """Return the enrichment snapshot for the investor with the given slug."""
+    investors = InvestorsService(db)
     try:
-        return service.get_by_slug(slug)
+        investor = investors.get_by_slug(slug)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    if investor.external_vc_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Investor slug={slug} has no external_vc_id",
+        )
+    return EnrichmentService(db).get_snapshot(investor.external_vc_id)
 
 
 @router.get("/{investor_id}", response_model=InvestorDetail)
