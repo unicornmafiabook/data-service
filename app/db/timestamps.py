@@ -25,7 +25,7 @@ so SQLModel's metaclass constructs a fresh ``Column`` for each subclass
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, func, text
+from sqlalchemy import DateTime, text
 from sqlmodel import Field, SQLModel
 
 class TimestampedModel(SQLModel):
