@@ -2,12 +2,21 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TOOLS_ROOT="$(cd "$REPO_ROOT/../agents/agents" && pwd)"
-PYTHON_BIN="$REPO_ROOT/venv/bin/python"
+PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
 
-if [ -f "$TOOLS_ROOT/.venv/bin/activate" ]; then
+# Activate the project's uv-managed venv so ruff and pyright are on PATH.
+if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
   # shellcheck disable=SC1091
-  source "$TOOLS_ROOT/.venv/bin/activate"
+  source "$REPO_ROOT/.venv/bin/activate"
+fi
+
+# Fallback: use the sibling tools venv if ruff/pyright aren't installed locally yet.
+if ! command -v ruff >/dev/null 2>&1 || ! command -v pyright >/dev/null 2>&1; then
+  TOOLS_ROOT="$(cd "$REPO_ROOT/../agents/agents" 2>/dev/null && pwd || true)"
+  if [ -n "$TOOLS_ROOT" ] && [ -f "$TOOLS_ROOT/.venv/bin/activate" ]; then
+    # shellcheck disable=SC1091
+    source "$TOOLS_ROOT/.venv/bin/activate"
+  fi
 fi
 
 declare -a TARGETS
