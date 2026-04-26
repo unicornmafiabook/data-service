@@ -54,7 +54,7 @@ def _row_to_vc(row, funds: list) -> dict:
         rounds = [_STAGE_TO_ENUM[s] for s in (row["stages"] or []) if s in _STAGE_TO_ENUM]
 
     return {
-        "id":                row["external_vc_id"],
+        "id":                str(row["external_vc_id"]),
         "name":              row["canonical_name"],
         "short_description": row["short_description"],
         "long_description":  row["long_description"],
