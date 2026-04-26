@@ -6,10 +6,36 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.importer.normalise import normalize_name, clean_website, extract_domain
-from app.models.investors import InvestorCreate, InvestorUpdate, InvestorSearchBody, UPDATABLE_COLUMNS
-from app.services.investor_search import search_investors
+from app.models.investors import (
+    InvestorCreate,
+    InvestorUpdate,
+    InvestorSearchBody,
+    UPDATABLE_COLUMNS,
+)
 
 router = APIRouter(prefix="/investors", tags=["investors"])
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "investor"
+
+
+def make_unique_slug(db: Session, canonical_name: str) -> str:
+    base_slug = slugify(canonical_name)
+    slug = base_slug
+    counter = 2
+
+    while db.execute(
+        text("SELECT 1 FROM investors WHERE slug = :slug"),
+        {"slug": slug},
+    ).scalar():
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    return slug
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────
@@ -32,7 +58,7 @@ def get_stats(db: Session = Depends(get_db)):
     """)).scalar()
 
     members = db.execute(text("SELECT COUNT(*) FROM vc_members")).scalar()
-    funds   = db.execute(text("SELECT COUNT(*) FROM vc_funds")).scalar()
+    funds = db.execute(text("SELECT COUNT(*) FROM vc_funds")).scalar()
     portcos = db.execute(text("SELECT COUNT(*) FROM portfolio_companies")).scalar()
 
     return {
@@ -53,14 +79,33 @@ def list_investors(
     db: Session = Depends(get_db),
 ):
     rows = db.execute(text("""
-        SELECT id, canonical_name, website, domain, stages, sectors, geographies,
-               rounds, geo_focus, investor_type, status, hq_country, location,
-               short_description, enrichment_status,
-               first_cheque_min, first_cheque_max, source_count, needs_review
+        SELECT
+            id,
+            external_vc_id,
+            canonical_name,
+            slug,
+            website,
+            domain,
+            stages,
+            sectors,
+            geographies,
+            rounds,
+            geo_focus,
+            investor_type,
+            status,
+            hq_country,
+            location,
+            short_description,
+            enrichment_status,
+            first_cheque_min,
+            first_cheque_max,
+            source_count,
+            needs_review
         FROM investors
         ORDER BY canonical_name
         LIMIT :limit OFFSET :offset
     """), {"limit": limit, "offset": offset}).mappings().all()
+
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
@@ -69,8 +114,8 @@ def list_investors(
 @router.post("", status_code=201)
 def create_investor(body: InvestorCreate, db: Session = Depends(get_db)):
     website = clean_website(body.website)
-    domain  = extract_domain(body.website)
-    slug    = re.sub(r"[^a-z0-9]+", "-", body.canonical_name.lower()).strip("-")
+    domain = extract_domain(website)
+    slug = make_unique_slug(db, body.canonical_name)
 
     # Block duplicate domain
     if domain:
@@ -79,7 +124,10 @@ def create_investor(body: InvestorCreate, db: Session = Depends(get_db)):
             {"domain": domain},
         ).scalar()
         if existing:
-            raise HTTPException(409, f"Investor with domain {domain} already exists (id={existing})")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Investor with domain {domain} already exists (id={existing})",
+            )
 
     result = db.execute(text("""
         INSERT INTO investors (
@@ -99,30 +147,36 @@ def create_investor(body: InvestorCreate, db: Session = Depends(get_db)):
             'not_started', 0, '{}',
             :dedupe_key, 0.9, FALSE
         )
-        RETURNING id, external_vc_id
+        RETURNING id, external_vc_id, slug
     """), {
-        "canonical_name":      body.canonical_name,
-        "normalized_name":     normalize_name(body.canonical_name),
-        "website":             website,
-        "domain":              domain,
-        "slug":                slug,
-        "investor_type":       body.investor_type,
-        "status":              body.status,
-        "hq_city":             body.hq_city,
-        "hq_country":          body.hq_country,
-        "stages":              body.stages,
-        "sectors":             body.sectors,
-        "geographies":         body.geographies,
-        "description":         body.description,
-        "investment_thesis":   body.investment_thesis,
-        "first_cheque_min":    body.first_cheque_min,
-        "first_cheque_max":    body.first_cheque_max,
+        "canonical_name": body.canonical_name,
+        "normalized_name": normalize_name(body.canonical_name),
+        "website": website,
+        "domain": domain,
+        "slug": slug,
+        "investor_type": body.investor_type,
+        "status": body.status,
+        "hq_city": body.hq_city,
+        "hq_country": body.hq_country,
+        "stages": body.stages,
+        "sectors": body.sectors,
+        "geographies": body.geographies,
+        "description": body.description,
+        "investment_thesis": body.investment_thesis,
+        "first_cheque_min": body.first_cheque_min,
+        "first_cheque_max": body.first_cheque_max,
         "first_cheque_currency": body.first_cheque_currency,
-        "dedupe_key":          f"domain:{domain}" if domain else f"name:{normalize_name(body.canonical_name)}",
+        "dedupe_key": f"domain:{domain}" if domain else f"name:{normalize_name(body.canonical_name)}",
     })
+
     row = result.mappings().first()
     db.commit()
-    return {"id": str(row["id"]), "external_vc_id": row["external_vc_id"]}
+
+    return {
+        "id": str(row["id"]),
+        "external_vc_id": row["external_vc_id"],
+        "slug": row["slug"],
+    }
 
 
 # ── Rich search (POST body) ───────────────────────────────────────────────────
@@ -130,18 +184,45 @@ def create_investor(body: InvestorCreate, db: Session = Depends(get_db)):
 @router.post("/search")
 def search_post(body: InvestorSearchBody, db: Session = Depends(get_db)):
     sql = """
-        SELECT id, canonical_name, website, domain, investor_type, status,
-               hq_city, hq_country, location, stages, sectors, geographies,
-               rounds, geo_focus, short_description, stated_thesis,
-               investment_tendency, year_founded,
-               first_cheque_min, first_cheque_max, first_cheque_currency,
-               ticket_size_min, ticket_size_max,
-               source_count, dedupe_confidence, needs_review, enrichment_status,
-               external_vc_id, slug
+        SELECT
+            id,
+            external_vc_id,
+            canonical_name,
+            slug,
+            website,
+            domain,
+            investor_type,
+            status,
+            hq_city,
+            hq_country,
+            location,
+            stages,
+            sectors,
+            geographies,
+            rounds,
+            geo_focus,
+            short_description,
+            stated_thesis,
+            revealed_thesis,
+            investment_tendency,
+            year_founded,
+            first_cheque_min,
+            first_cheque_max,
+            first_cheque_currency,
+            ticket_size_min,
+            ticket_size_max,
+            source_count,
+            dedupe_confidence,
+            needs_review,
+            enrichment_status
         FROM investors
         WHERE 1 = 1
     """
-    params: dict = {"limit": min(body.limit, 200), "offset": body.offset}
+
+    params: dict = {
+        "limit": min(body.limit, 200),
+        "offset": body.offset,
+    }
 
     if body.name:
         sql += " AND canonical_name ILIKE :name"
@@ -150,17 +231,19 @@ def search_post(body: InvestorSearchBody, db: Session = Depends(get_db)):
     if body.q:
         sql += """
             AND (
-                canonical_name    ILIKE :q
-                OR stated_thesis  ILIKE :q
+                canonical_name ILIKE :q
+                OR stated_thesis ILIKE :q
+                OR revealed_thesis ILIKE :q
                 OR investment_thesis ILIKE :q
-                OR description    ILIKE :q
+                OR description ILIKE :q
                 OR short_description ILIKE :q
+                OR long_description ILIKE :q
             )
         """
         params["q"] = f"%{body.q}%"
 
     if body.stages:
-        sql += " AND stages && :stages"
+        sql += " AND (stages && :stages OR rounds && :stages)"
         params["stages"] = body.stages
 
     if body.sectors:
@@ -184,11 +267,25 @@ def search_post(body: InvestorSearchBody, db: Session = Depends(get_db)):
         params["needs_review"] = body.needs_review
 
     if body.cheque_max is not None:
-        sql += " AND (first_cheque_min IS NULL OR first_cheque_min <= :cheque_max)"
+        sql += """
+            AND (
+                ticket_size_min IS NULL
+                OR ticket_size_min <= :cheque_max
+                OR first_cheque_min IS NULL
+                OR first_cheque_min <= :cheque_max
+            )
+        """
         params["cheque_max"] = body.cheque_max
 
     if body.cheque_min is not None:
-        sql += " AND (first_cheque_max IS NULL OR first_cheque_max >= :cheque_min)"
+        sql += """
+            AND (
+                ticket_size_max IS NULL
+                OR ticket_size_max >= :cheque_min
+                OR first_cheque_max IS NULL
+                OR first_cheque_max >= :cheque_min
+            )
+        """
         params["cheque_min"] = body.cheque_min
 
     sql += " ORDER BY canonical_name LIMIT :limit OFFSET :offset"
@@ -211,8 +308,92 @@ def search_get(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    results = search_investors(db, stage, sector, geography, cheque_max, q, limit, offset, name)
-    return {"count": len(results), "results": results}
+    sql = """
+        SELECT
+            id,
+            external_vc_id,
+            canonical_name,
+            slug,
+            website,
+            domain,
+            investor_type,
+            status,
+            hq_city,
+            hq_country,
+            location,
+            stages,
+            sectors,
+            geographies,
+            rounds,
+            geo_focus,
+            short_description,
+            stated_thesis,
+            revealed_thesis,
+            investment_tendency,
+            year_founded,
+            first_cheque_min,
+            first_cheque_max,
+            first_cheque_currency,
+            ticket_size_min,
+            ticket_size_max,
+            source_count,
+            dedupe_confidence,
+            needs_review,
+            enrichment_status
+        FROM investors
+        WHERE 1 = 1
+    """
+
+    params: dict = {
+        "limit": limit,
+        "offset": offset,
+    }
+
+    if name:
+        sql += " AND canonical_name ILIKE :name"
+        params["name"] = f"%{name}%"
+
+    if stage:
+        sql += " AND (:stage = ANY(stages) OR :stage = ANY(rounds))"
+        params["stage"] = stage
+
+    if sector:
+        sql += " AND :sector = ANY(sectors)"
+        params["sector"] = sector
+
+    if geography:
+        sql += " AND (:geography = ANY(geographies) OR :geography = ANY(geo_focus))"
+        params["geography"] = geography
+
+    if cheque_max is not None:
+        sql += """
+            AND (
+                ticket_size_min IS NULL
+                OR ticket_size_min <= :cheque_max
+                OR first_cheque_min IS NULL
+                OR first_cheque_min <= :cheque_max
+            )
+        """
+        params["cheque_max"] = cheque_max
+
+    if q:
+        sql += """
+            AND (
+                canonical_name ILIKE :q
+                OR stated_thesis ILIKE :q
+                OR revealed_thesis ILIKE :q
+                OR investment_thesis ILIKE :q
+                OR description ILIKE :q
+                OR short_description ILIKE :q
+                OR long_description ILIKE :q
+            )
+        """
+        params["q"] = f"%{q}%"
+
+    sql += " ORDER BY canonical_name LIMIT :limit OFFSET :offset"
+
+    rows = db.execute(text(sql), params).mappings().all()
+    return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
 # ── Lookup by slug ────────────────────────────────────────────────────────────
@@ -223,8 +404,10 @@ def get_by_slug(slug: str, db: Session = Depends(get_db)):
         text("SELECT * FROM investors WHERE slug = :slug"),
         {"slug": slug},
     ).mappings().first()
+
     if not investor:
-        raise HTTPException(404, f"No investor with slug '{slug}'")
+        raise HTTPException(status_code=404, detail=f"No investor with slug '{slug}'")
+
     return dict(investor)
 
 
@@ -236,8 +419,9 @@ def get_investor(investor_id: str, db: Session = Depends(get_db)):
         text("SELECT * FROM investors WHERE id = :id"),
         {"id": investor_id},
     ).mappings().first()
+
     if not investor:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     sources = db.execute(text("""
         SELECT source_name, source_row_id, original_name, original_website, raw_data
@@ -246,7 +430,10 @@ def get_investor(investor_id: str, db: Session = Depends(get_db)):
         ORDER BY source_name
     """), {"id": investor_id}).mappings().all()
 
-    return {"investor": dict(investor), "sources": [dict(r) for r in sources]}
+    return {
+        "investor": dict(investor),
+        "sources": [dict(r) for r in sources],
+    }
 
 
 # ── Partial update ────────────────────────────────────────────────────────────
@@ -257,22 +444,28 @@ def update_investor(investor_id: str, body: InvestorUpdate, db: Session = Depend
         k: v for k, v in body.model_dump(exclude_none=True).items()
         if k in UPDATABLE_COLUMNS
     }
+
     if not updates:
-        raise HTTPException(400, "No valid fields to update")
+        raise HTTPException(status_code=400, detail="No valid fields to update")
 
     # Check investor exists
     exists = db.execute(
-        text("SELECT 1 FROM investors WHERE id = :id"), {"id": investor_id}
+        text("SELECT 1 FROM investors WHERE id = :id"),
+        {"id": investor_id},
     ).scalar()
+
     if not exists:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     set_clause = ", ".join(f"{col} = :{col}" for col in updates)
+
     db.execute(
         text(f"UPDATE investors SET {set_clause}, updated_at = NOW() WHERE id = :id"),
         {**updates, "id": investor_id},
     )
+
     db.commit()
+
     return {"updated": list(updates.keys())}
 
 
@@ -284,8 +477,9 @@ def get_members(investor_id: str, db: Session = Depends(get_db)):
         text("SELECT external_vc_id FROM investors WHERE id = :id"),
         {"id": investor_id},
     ).scalar()
+
     if vc_id is None:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     rows = db.execute(text("""
         SELECT name, position, expertise, description, linkedin, email, joined_at
@@ -293,6 +487,7 @@ def get_members(investor_id: str, db: Session = Depends(get_db)):
         WHERE vc_id = :vc_id
         ORDER BY name
     """), {"vc_id": vc_id}).mappings().all()
+
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
@@ -304,8 +499,9 @@ def get_funds(investor_id: str, db: Session = Depends(get_db)):
         text("SELECT external_vc_id FROM investors WHERE id = :id"),
         {"id": investor_id},
     ).scalar()
+
     if vc_id is None:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     rows = db.execute(text("""
         SELECT fund_name, fund_size, fund_size_raw, vintage_year
@@ -313,6 +509,7 @@ def get_funds(investor_id: str, db: Session = Depends(get_db)):
         WHERE vc_id = :vc_id
         ORDER BY vintage_year NULLS LAST
     """), {"vc_id": vc_id}).mappings().all()
+
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
@@ -321,55 +518,92 @@ def get_funds(investor_id: str, db: Session = Depends(get_db)):
 @router.get("/{investor_id}/portfolio")
 def get_portfolio(investor_id: str, db: Session = Depends(get_db)):
     rows = db.execute(text("""
-        SELECT c.id, c.canonical_name, c.website, c.domain,
-               c.sector, c.sub_sector, c.description,
-               r.relationship_type, r.investment_stage, r.investment_round,
-               r.investment_date, r.confidence_score, r.source
+        SELECT
+            c.id,
+            c.canonical_name,
+            c.website,
+            c.domain,
+            c.sector,
+            c.sub_sector,
+            c.description,
+            r.relationship_type,
+            r.investment_stage,
+            r.investment_round,
+            r.investment_date,
+            r.confidence_score,
+            r.source
         FROM investor_company_relationships r
         JOIN companies c ON c.id = r.company_id
         WHERE r.investor_id = :id
         ORDER BY c.canonical_name
     """), {"id": investor_id}).mappings().all()
+
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
 # ── Similar investors ─────────────────────────────────────────────────────────
 
 @router.get("/{investor_id}/similar")
-def get_similar(investor_id: str, limit: int = Query(10, le=50), db: Session = Depends(get_db)):
+def get_similar(
+    investor_id: str,
+    limit: int = Query(10, le=50),
+    db: Session = Depends(get_db),
+):
     source = db.execute(
-        text("SELECT stages, sectors, geographies FROM investors WHERE id = :id"),
+        text("SELECT stages, sectors, geographies, geo_focus FROM investors WHERE id = :id"),
         {"id": investor_id},
     ).mappings().first()
+
     if not source:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     rows = db.execute(text("""
-        SELECT id, canonical_name, website, domain, stages, sectors,
-               geographies, short_description, enrichment_status,
-               (
-                   COALESCE(array_length(
-                       ARRAY(SELECT unnest(stages)     INTERSECT SELECT unnest(:stages)),     1), 0) * 2 +
-                   COALESCE(array_length(
-                       ARRAY(SELECT unnest(sectors)    INTERSECT SELECT unnest(:sectors)),    1), 0) * 3 +
-                   COALESCE(array_length(
-                       ARRAY(SELECT unnest(geographies) INTERSECT SELECT unnest(:geos)),      1), 0)
-               ) AS similarity_score
+        SELECT
+            id,
+            external_vc_id,
+            canonical_name,
+            slug,
+            website,
+            domain,
+            stages,
+            sectors,
+            geographies,
+            geo_focus,
+            short_description,
+            enrichment_status,
+            (
+                COALESCE(array_length(
+                    ARRAY(SELECT unnest(stages) INTERSECT SELECT unnest(:stages)), 1
+                ), 0) * 2 +
+                COALESCE(array_length(
+                    ARRAY(SELECT unnest(sectors) INTERSECT SELECT unnest(:sectors)), 1
+                ), 0) * 3 +
+                COALESCE(array_length(
+                    ARRAY(SELECT unnest(geographies) INTERSECT SELECT unnest(:geos)), 1
+                ), 0) +
+                COALESCE(array_length(
+                    ARRAY(SELECT unnest(geo_focus) INTERSECT SELECT unnest(:geo_focus)), 1
+                ), 0)
+            ) AS similarity_score
         FROM investors
         WHERE id != :id
           AND (
-              stages      && :stages
-              OR sectors  && :sectors
+              stages && :stages
+              OR sectors && :sectors
+              OR geographies && :geos
+              OR geo_focus && :geo_focus
           )
         ORDER BY similarity_score DESC
         LIMIT :limit
     """), {
-        "id":      investor_id,
-        "stages":  list(source["stages"] or []),
+        "id": investor_id,
+        "stages": list(source["stages"] or []),
         "sectors": list(source["sectors"] or []),
-        "geos":    list(source["geographies"] or []),
-        "limit":   limit,
+        "geos": list(source["geographies"] or []),
+        "geo_focus": list(source["geo_focus"] or []),
+        "limit": limit,
     }).mappings().all()
+
     return {"count": len(rows), "results": [dict(r) for r in rows]}
 
 
@@ -381,8 +615,9 @@ def delete_investor(investor_id: str, db: Session = Depends(get_db)):
         text("SELECT id, external_vc_id FROM investors WHERE id = :id"),
         {"id": investor_id},
     ).mappings().first()
+
     if not investor:
-        raise HTTPException(404, "Investor not found")
+        raise HTTPException(status_code=404, detail="Investor not found")
 
     # enrichment_runs uses a polymorphic target_id with no FK — delete manually
     db.execute(
@@ -390,10 +625,17 @@ def delete_investor(investor_id: str, db: Session = Depends(get_db)):
         {"id": investor_id},
     )
 
-    # FK cascades handle: investor_sources, investor_company_relationships,
-    # dedupe_candidates, vc_members, vc_funds, portfolio_companies (→ portco_team), vc_enrichments
-    db.execute(text("DELETE FROM investors WHERE id = :id"), {"id": investor_id})
+    # FK cascades handle investor_sources, investor_company_relationships,
+    # dedupe_candidates, vc_members, vc_funds, portfolio_companies,
+    # portco_team, vc_enrichments, etc.
+    db.execute(
+        text("DELETE FROM investors WHERE id = :id"),
+        {"id": investor_id},
+    )
+
     db.commit()
-    return {"deleted": investor_id, "external_vc_id": investor["external_vc_id"]}
 
-
+    return {
+        "deleted": investor_id,
+        "external_vc_id": investor["external_vc_id"],
+    }
