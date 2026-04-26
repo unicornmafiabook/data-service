@@ -15,40 +15,35 @@ Tables choose the variant matching their on-disk schema:
 - ``TimestampedModel`` — convenience base that combines both. Used by
   tables whose prod schema carries both columns (e.g. ``investors``,
   ``vc_enrichments``).
+
+We use ``sa_column_kwargs`` rather than a pre-built ``sa_column=Column(...)``
+so SQLModel's metaclass constructs a fresh ``Column`` for each subclass
+— without this, every table inheriting the mixin would share one
+``Column`` instance and SQLAlchemy raises
+``ArgumentError: Column already assigned to Table``.
 """
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, func
+from sqlalchemy import DateTime, func, text
 from sqlmodel import Field, SQLModel
 
-
-class CreatedAtMixin(SQLModel):
-    """Adds a ``created_at`` column with a DB-side default of NOW()."""
-
-    created_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(
-            DateTime(timezone=False),
-            server_default=func.now(),
-            nullable=True,
-        ),
-    )
-
-
-class UpdatedAtMixin(SQLModel):
-    """Adds an ``updated_at`` column that auto-bumps on every UPDATE."""
-
-    updated_at: datetime | None = Field(
-        default=None,
-        sa_column=Column(
-            DateTime(timezone=False),
-            server_default=func.now(),
-            onupdate=func.now(),
-            nullable=True,
-        ),
-    )
-
-
-class TimestampedModel(CreatedAtMixin, UpdatedAtMixin):
+class TimestampedModel(SQLModel):
     """Combined mixin for tables carrying both timestamps."""
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(),
+        nullable=False,
+        sa_type=DateTime,
+        sa_column_kwargs={"server_default": text("CURRENT_TIMESTAMP")},
+    )
+
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(),
+        nullable=False,
+        sa_type=DateTime,
+        sa_column_kwargs={
+            "server_default": text("CURRENT_TIMESTAMP"),
+            "onupdate": text("CURRENT_TIMESTAMP"),
+        },
+    )
