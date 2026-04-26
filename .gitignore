@@ -9,3 +9,4 @@ prompts
 .env
 .env.development
 .env.prod
+.env
