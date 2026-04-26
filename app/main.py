@@ -1,10 +1,10 @@
 from fastapi import FastAPI
 from app.api.routes.health import router as health_router
-from app.api.routes.investors import router as investors_router
 from app.api.routes.ingest import router as ingest_router
 from app.api.routes.enrichment import router as enrichment_router
 from app.api.routes.indexing import router as indexing_router
 from app.api.routes.matching import router as matching_router
+from app.investors.routes import router as new_investors_router
 
 app = FastAPI(
     title="VC Data Service",
@@ -13,7 +13,7 @@ app = FastAPI(
 )
 
 app.include_router(health_router)
-app.include_router(investors_router)
+app.include_router(new_investors_router)
 app.include_router(ingest_router)
 app.include_router(enrichment_router)
 app.include_router(indexing_router)
