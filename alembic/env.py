@@ -21,13 +21,7 @@ from sqlmodel import SQLModel
 from alembic import context
 
 from app.core.config import get_settings
-
-# Import every per-context `models` module at module level so SQLModel.metadata
-# is fully populated before autogenerate inspects it. Add new contexts here as
-# their `app/<context>/models.py` is created.
-import app.enrichment.models  # noqa: E402, F401
-import app.investors.models  # noqa: E402, F401
-
+from app.db.models_metadata import metadata
 
 def render_item(type_: str, obj: Any, autogen_context: Any) -> Any:
     """
@@ -51,7 +45,7 @@ if config.config_file_name is not None:
 
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
-target_metadata = SQLModel.metadata
+target_metadata = metadata
 
 
 def run_migrations_offline() -> None:
