@@ -14,7 +14,16 @@ from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
 from app.investors.models import Investor
-from app.investors.schemas import VC, InvestmentStage, InvestorCreate, VCStatus
+from app.investors.schemas import (
+    VC,
+    EnrichmentStatus,
+    InvestmentStage,
+    InvestmentTendency,
+    InvestorCreate,
+    InvestorDetail,
+    InvestorSummary,
+    VCStatus,
+)
 
 
 class InvestorNotFoundError(Exception):
@@ -69,6 +78,83 @@ def _cast_status(status: str | None) -> VCStatus | None:
     return VCStatus(status)
 
 
+def _cast_enrichment_status(value: str) -> EnrichmentStatus:
+    return EnrichmentStatus(value)
+
+
+def _cast_tendency(value: str | None) -> InvestmentTendency | None:
+    if value is None:
+        return None
+    return InvestmentTendency(value)
+
+
+def _summary_from_row(row: Investor) -> InvestorSummary:
+    return InvestorSummary(
+        id=str(row.id),
+        canonical_name=row.canonical_name,
+        slug=row.slug,
+        website=row.website,
+        domain=row.domain,
+        investor_type=row.investor_type,
+        status=row.status,
+        hq_city=row.hq_city,
+        hq_country=row.hq_country,
+        stages=row.stages,
+        sectors=row.sectors,
+        geographies=row.geographies,
+        first_cheque_min=row.first_cheque_min,
+        first_cheque_max=row.first_cheque_max,
+        first_cheque_currency=row.first_cheque_currency,
+        description=row.description,
+        investment_thesis=row.investment_thesis,
+        source_count=row.source_count,
+        dedupe_confidence=row.dedupe_confidence,
+        needs_review=row.needs_review,
+        enrichment_status=_cast_enrichment_status(row.enrichment_status),
+    )
+
+
+def _detail_from_row(row: Investor) -> InvestorDetail:
+    return InvestorDetail(
+        id=str(row.id),
+        external_vc_id=row.external_vc_id,
+        canonical_name=row.canonical_name,
+        slug=row.slug,
+        website=row.website,
+        website_url=row.website_url,
+        domain=row.domain,
+        investor_type=row.investor_type,
+        status=row.status,
+        hq_city=row.hq_city,
+        hq_country=row.hq_country,
+        location=row.location,
+        stages=row.stages or None,
+        rounds=row.rounds or None,
+        sectors=row.sectors or None,
+        geographies=row.geographies or None,
+        geo_focus=row.geo_focus or None,
+        short_description=row.short_description,
+        long_description=row.long_description,
+        investment_thesis=row.investment_thesis,
+        stated_thesis=row.stated_thesis,
+        revealed_thesis=row.revealed_thesis,
+        investment_tendency=_cast_tendency(row.investment_tendency),
+        year_founded=row.year_founded,
+        ticket_size_min=row.ticket_size_min,
+        ticket_size_max=row.ticket_size_max,
+        first_cheque_min=row.first_cheque_min,
+        first_cheque_max=row.first_cheque_max,
+        first_cheque_currency=row.first_cheque_currency,
+        enrichment_status=_cast_enrichment_status(row.enrichment_status),
+        source_count=row.source_count,
+        source_names=row.source_names,
+        needs_review=row.needs_review,
+        dedupe_confidence=row.dedupe_confidence,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
 def _page_select(limit: int, offset: int) -> SelectOfScalar[Investor]:
     column = Investor.canonical_name
     statement = select(Investor).order_by(column)
@@ -102,6 +188,17 @@ class InvestorsService:
     def list_paginated(self, *, limit: int, offset: int) -> list[VC]:
         rows = self._fetch_page(limit, offset)
         return [_vc_from_row(row) for row in rows]
+
+    def list_summaries(self, *, limit: int, offset: int) -> list[InvestorSummary]:
+        rows = self._fetch_page(limit, offset)
+        return [_summary_from_row(row) for row in rows]
+
+    def get_detail_by_id(self, investor_id: UUID) -> InvestorDetail:
+        condition = Investor.id == investor_id
+        row = self._first_matching(condition)
+        if row is None:
+            raise InvestorNotFoundError(f"No investor with id={investor_id}")
+        return _detail_from_row(row)
 
     def _persist(self, row: Investor) -> None:
         session = self._session

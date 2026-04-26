@@ -2,10 +2,11 @@
 
 Thin wrappers over ``InvestorsService``: each handler instantiates the
 service with a session from ``Depends(get_db)``, delegates, and maps
-``InvestorNotFoundError`` to ``HTTPException(404)``. Paths are renamed
-relative to the legacy ``app.api.routes.investors`` router so both
-routers can coexist under the same ``/investors`` prefix during the
-incremental migration.
+``InvestorNotFoundError`` to ``HTTPException(404)``.
+
+``GET /investors/search`` returns the slim ``InvestorSummary`` rows the
+data table renders. ``GET /investors/{investor_id}`` returns the full
+``InvestorDetail`` shape — both contracts mirror the frontend types.
 """
 
 from uuid import UUID
@@ -14,7 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
 from app.db.session import get_db
-from app.investors.schemas import VC, InvestorCreate
+from app.investors.schemas import (
+    VC,
+    InvestorCreate,
+    InvestorDetail,
+    InvestorSummary,
+)
 from app.investors.service import (
     InvestorNotFoundError,
     InvestorsService,
@@ -33,15 +39,15 @@ def create_investor(
     return service.create(payload)
 
 
-@router.get("/search", response_model=list[VC])
-def list_investors(
+@router.get("/search", response_model=list[InvestorSummary])
+def search_investors(
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
-) -> list[VC]:
-    """Return a paginated slice of investors as ``VC`` schemas."""
+) -> list[InvestorSummary]:
+    """Return a paginated slice of investors as ``InvestorSummary`` rows."""
     service = InvestorsService(db)
-    return service.list_paginated(limit=limit, offset=offset)
+    return service.list_summaries(limit=limit, offset=offset)
 
 
 @router.get("/by-external/{external_vc_id}", response_model=VC)
@@ -70,14 +76,14 @@ def get_investor_by_slug(
         raise HTTPException(status_code=404, detail=str(error)) from error
 
 
-@router.get("/by-id/{investor_id}", response_model=VC)
-def get_investor_by_id(
+@router.get("/{investor_id}", response_model=InvestorDetail)
+def get_investor_detail_by_id(
     investor_id: UUID,
     db: Session = Depends(get_db),
-) -> VC:
-    """Return the investor with the given UUID id."""
+) -> InvestorDetail:
+    """Return the full ``InvestorDetail`` shape for a given UUID id."""
     service = InvestorsService(db)
     try:
-        return service.get_by_id(investor_id)
+        return service.get_detail_by_id(investor_id)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
