@@ -10,6 +10,7 @@ helper so the class itself stays focused on session orchestration.
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 from sqlmodel.sql.expression import SelectOfScalar
 
@@ -21,6 +22,7 @@ from app.investors.schemas import (
     InvestmentTendency,
     InvestorCreate,
     InvestorDetail,
+    InvestorSearchBody,
     InvestorSummary,
     VCStatus,
 )
@@ -162,6 +164,65 @@ def _page_select(limit: int, offset: int) -> SelectOfScalar[Investor]:
     return statement.limit(limit)
 
 
+def _apply_text_filters(
+    statement: SelectOfScalar[Investor], params: InvestorSearchBody
+) -> SelectOfScalar[Investor]:
+    if params.name:
+        statement = statement.where(
+            Investor.canonical_name.ilike(f"%{params.name}%")  # type: ignore[attr-defined]
+        )
+    if params.q:
+        like = f"%{params.q}%"
+        statement = statement.where(
+            or_(
+                Investor.canonical_name.ilike(like),  # type: ignore[attr-defined]
+                Investor.investment_thesis.ilike(like),  # type: ignore[attr-defined,union-attr]
+                Investor.description.ilike(like),  # type: ignore[attr-defined,union-attr]
+            )
+        )
+    return statement
+
+
+def _apply_array_filters(
+    statement: SelectOfScalar[Investor], params: InvestorSearchBody
+) -> SelectOfScalar[Investor]:
+    if params.stages:
+        statement = statement.where(Investor.stages.op("&&")(params.stages))  # type: ignore[attr-defined]
+    if params.sectors:
+        statement = statement.where(Investor.sectors.op("&&")(params.sectors))  # type: ignore[attr-defined]
+    if params.geographies:
+        statement = statement.where(
+            Investor.geographies.op("&&")(params.geographies)  # type: ignore[attr-defined]
+        )
+    return statement
+
+
+def _apply_scalar_filters(
+    statement: SelectOfScalar[Investor], params: InvestorSearchBody
+) -> SelectOfScalar[Investor]:
+    if params.investor_type:
+        statement = statement.where(Investor.investor_type == params.investor_type)
+    if params.enrichment_status:
+        statement = statement.where(
+            Investor.enrichment_status == params.enrichment_status
+        )
+    if params.needs_review is not None:
+        statement = statement.where(Investor.needs_review == params.needs_review)
+    if params.cheque_min is not None:
+        statement = statement.where(Investor.first_cheque_min <= params.cheque_min)  # type: ignore[operator]
+    if params.cheque_max is not None:
+        statement = statement.where(Investor.first_cheque_min <= params.cheque_max)  # type: ignore[operator]
+    return statement
+
+
+def _search_select(params: InvestorSearchBody) -> SelectOfScalar[Investor]:
+    statement = select(Investor).order_by(Investor.canonical_name)
+    statement = _apply_text_filters(statement, params)
+    statement = _apply_array_filters(statement, params)
+    statement = _apply_scalar_filters(statement, params)
+    return statement.offset(params.offset).limit(params.limit)
+
+
 class InvestorsService:
     """Read/write operations over the ``investors`` table."""
 
@@ -189,8 +250,8 @@ class InvestorsService:
         rows = self._fetch_page(limit, offset)
         return [_vc_from_row(row) for row in rows]
 
-    def list_summaries(self, *, limit: int, offset: int) -> list[InvestorSummary]:
-        rows = self._fetch_page(limit, offset)
+    def list_summaries(self, params: InvestorSearchBody) -> list[InvestorSummary]:
+        rows = self._fetch_filtered(params)
         return [_summary_from_row(row) for row in rows]
 
     def get_detail_by_id(self, investor_id: UUID) -> InvestorDetail:
@@ -220,6 +281,12 @@ class InvestorsService:
 
     def _fetch_page(self, limit: int, offset: int) -> list[Investor]:
         statement = _page_select(limit, offset)
+        session = self._session
+        result = session.exec(statement)
+        return list(result.all())
+
+    def _fetch_filtered(self, params: InvestorSearchBody) -> list[Investor]:
+        statement = _search_select(params)
         session = self._session
         result = session.exec(statement)
         return list(result.all())

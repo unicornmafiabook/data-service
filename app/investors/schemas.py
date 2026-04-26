@@ -64,6 +64,30 @@ class VC(BaseModel):
     slug: str
 
 
+class InvestorSearchBody(BaseModel):
+    """Filter set for ``GET /investors/search``.
+
+    All fields are optional query parameters. List filters use ``IN``-style
+    semantics (a row matches if it overlaps with the provided values); scalar
+    fields use equality. ``name`` does a case-insensitive substring match on
+    ``canonical_name``; ``q`` does a case-insensitive substring match across
+    ``canonical_name``, ``investment_thesis``, and ``description``.
+    """
+
+    name: str | None = None
+    q: str | None = None
+    stages: list[str] = []
+    sectors: list[str] = []
+    geographies: list[str] = []
+    investor_type: str | None = None
+    enrichment_status: str | None = None
+    needs_review: bool | None = None
+    cheque_min: float | None = None
+    cheque_max: float | None = None
+    limit: int = 50
+    offset: int = 0
+
+
 class InvestorCreate(BaseModel):
     """Request body for creating a new investor."""
 

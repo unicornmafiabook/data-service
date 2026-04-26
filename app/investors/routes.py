@@ -9,9 +9,10 @@ data table renders. ``GET /investors/{investor_id}`` returns the full
 ``InvestorDetail`` shape — both contracts mirror the frontend types.
 """
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session
 
 from app.db.session import get_db
@@ -19,6 +20,7 @@ from app.investors.schemas import (
     VC,
     InvestorCreate,
     InvestorDetail,
+    InvestorSearchBody,
     InvestorSummary,
 )
 from app.investors.service import (
@@ -41,13 +43,17 @@ def create_investor(
 
 @router.get("/search", response_model=list[InvestorSummary])
 def search_investors(
-    limit: int = 50,
-    offset: int = 0,
+    params: Annotated[InvestorSearchBody, Query()],
     db: Session = Depends(get_db),
 ) -> list[InvestorSummary]:
-    """Return a paginated slice of investors as ``InvestorSummary`` rows."""
+    """Return a paginated slice of investors as ``InvestorSummary`` rows.
+
+    All ``InvestorSearchBody`` fields bind from the query string. List
+    filters (``stages``, ``sectors``, ``geographies``) accept repeated
+    values, e.g. ``?stages=seed&stages=series_a``.
+    """
     service = InvestorsService(db)
-    return service.list_summaries(limit=limit, offset=offset)
+    return service.list_summaries(params)
 
 
 @router.get("/by-external/{external_vc_id}", response_model=VC)
