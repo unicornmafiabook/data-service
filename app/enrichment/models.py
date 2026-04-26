@@ -18,11 +18,11 @@ from uuid import UUID, uuid4
 
 from sqlmodel import Field
 
-from app.db.timestamps import CreatedAtMixin, TimestampedModel
+from app.db.timestamps import TimestampedModel
 from app.db.types import JsonB, TextArray
 
 
-class VCMember(CreatedAtMixin, table=True):
+class VCMember(TimestampedModel, table=True):
     """Investment team member of a VC."""
 
     __tablename__ = "vc_members"  # type: ignore[assignment]
@@ -39,7 +39,7 @@ class VCMember(CreatedAtMixin, table=True):
     joined_at: date | None = None
 
 
-class VCFund(CreatedAtMixin, table=True):
+class VCFund(TimestampedModel, table=True):
     """A named fund raised by a VC."""
 
     __tablename__ = "vc_funds"  # type: ignore[assignment]
@@ -52,7 +52,7 @@ class VCFund(CreatedAtMixin, table=True):
     vintage_year: int | None = None
 
 
-class PortfolioCompany(CreatedAtMixin, table=True):
+class PortfolioCompany(TimestampedModel, table=True):
     """A company a VC has invested in."""
 
     __tablename__ = "portfolio_companies"  # type: ignore[assignment]
@@ -73,7 +73,7 @@ class PortfolioCompany(CreatedAtMixin, table=True):
     investment_date: str | None = None
 
 
-class PortcoTeamMember(CreatedAtMixin, table=True):
+class PortcoTeamMember(TimestampedModel, table=True):
     """An executive at a portfolio company."""
 
     __tablename__ = "portco_team"  # type: ignore[assignment]
