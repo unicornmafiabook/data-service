@@ -178,3 +178,19 @@ def import_vc_data(
     db.commit()
     stats["imported_investors"] = imported
     return stats
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    from app.db.session import engine
+
+    parser = argparse.ArgumentParser(description="Populate investors table from raw CSVs.")
+    parser.add_argument("--dry-run", action="store_true", help="Parse and merge without writing.")
+    parser.add_argument("--reset", action="store_true", help="Truncate investors before import.")
+    args = parser.parse_args()
+
+    with Session(engine) as db:
+        result = import_vc_data(db, dry_run=args.dry_run, reset=args.reset)
+    print(json.dumps(result, indent=2, default=str))
