@@ -2,7 +2,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 
-def search_investors(db: Session, stage=None, sector=None, geography=None, cheque_max=None, q=None, limit=50, offset=0):
+def search_investors(db: Session, stage=None, sector=None, geography=None, cheque_max=None, q=None, limit=50, offset=0, name=None):
     sql = """
         SELECT id, canonical_name, website, domain, investor_type, status,
                hq_city, hq_country, stages, sectors, geographies,
@@ -24,6 +24,9 @@ def search_investors(db: Session, stage=None, sector=None, geography=None, chequ
     if cheque_max is not None:
         sql += " AND (first_cheque_min IS NULL OR first_cheque_min <= :cheque_max)"
         params["cheque_max"] = cheque_max
+    if name:
+        sql += " AND canonical_name ILIKE :name"
+        params["name"] = f"%{name}%"
     if q:
         sql += """
             AND (

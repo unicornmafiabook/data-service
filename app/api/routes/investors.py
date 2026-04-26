@@ -201,6 +201,7 @@ def search_post(body: InvestorSearchBody, db: Session = Depends(get_db)):
 
 @router.get("/search")
 def search_get(
+    name: str | None = None,
     stage: str | None = None,
     sector: str | None = None,
     geography: str | None = None,
@@ -210,8 +211,21 @@ def search_get(
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
-    results = search_investors(db, stage, sector, geography, cheque_max, q, limit, offset)
+    results = search_investors(db, stage, sector, geography, cheque_max, q, limit, offset, name)
     return {"count": len(results), "results": results}
+
+
+# ── Lookup by slug ────────────────────────────────────────────────────────────
+
+@router.get("/by-slug/{slug}")
+def get_by_slug(slug: str, db: Session = Depends(get_db)):
+    investor = db.execute(
+        text("SELECT * FROM investors WHERE slug = :slug"),
+        {"slug": slug},
+    ).mappings().first()
+    if not investor:
+        raise HTTPException(404, f"No investor with slug '{slug}'")
+    return dict(investor)
 
 
 # ── Single investor ───────────────────────────────────────────────────────────
