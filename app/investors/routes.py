@@ -33,7 +33,7 @@ def create_investor(
     return service.create(payload)
 
 
-@router.get("/list", response_model=list[VC])
+@router.get("/search", response_model=list[VC])
 def list_investors(
     limit: int = 50,
     offset: int = 0,
