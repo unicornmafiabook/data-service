@@ -1,14 +1,32 @@
+from traceback import format_exc
 import json
-
+import logging
+from typing import Any
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models.enrichment import DeepEnrichedVC, EnrichedVC, VC, VCStatus
+from app.models.enrichment import DeepEnrichedVC, VC, VCStatus
+from app.services.indexing.retrieval_indexer import index_investor_for_retrieval
 
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
+logger = logging.getLogger(__name__)
 
+
+def _nonempty(value: str | None) -> str | None:
+    """Return None for empty/whitespace strings so COALESCE keeps the existing DB value."""
+    if not value or not value.strip():
+        return None
+    return value
+
+
+def _nonempty_list(value: list | None) -> list | None:
+    """Return None for empty lists so COALESCE keeps the existing DB value."""
+    if not value:
+        return None
+    return value
 _STAGE_TO_ENUM = {
     "pre_seed": "Pre-Seed",
     "seed":     "Seed",
@@ -90,205 +108,266 @@ def get_next_vc(db: Session = Depends(get_db)):
 
 
 @router.post("/vc/{vc_id}/complete")
-def complete_enrichment(vc_id: int, payload: DeepEnrichedVC, db: Session = Depends(get_db)):
-    investor = db.execute(text("""
-        SELECT id FROM investors WHERE external_vc_id = :vc_id
-    """), {"vc_id": vc_id}).mappings().first()
-    if not investor:
-        raise HTTPException(status_code=404, detail=f"No investor with vc_id={vc_id}")
-    investor_uuid = investor["id"]
+def complete_enrichment(vc_id: str, payload: DeepEnrichedVC, db: Session = Depends(get_db)):
+    try:
+        investor = _resolve_investor_for_enrichment(db, vc_id)
+        if not investor:
+            raise HTTPException(status_code=404, detail=f"No investor with vc_id={vc_id}")
+        investor_uuid = investor["id"]
+        external_vc_id = investor["external_vc_id"]
 
-    vc      = payload.vc
-    profile = payload.profile or None
-    ident   = profile.identity    if profile else None
-    prefs   = profile.preferences if profile else None
-    rt      = payload.revealed_thesis
+        vc      = payload.vc
+        profile = payload.profile or None
+        ident   = profile.identity    if profile else None
+        prefs   = profile.preferences if profile else None
+        rt      = payload.revealed_thesis
 
-    # ── Resolve fields (profile overrides vc where both present) ─────────────
-    short_desc    = (ident.short_description if ident else None) or vc.short_description
-    long_desc     = (ident.long_description  if ident else None) or vc.long_description
-    stated_thesis = (ident.stated_thesis     if ident else None) or vc.stated_thesis
-    year_founded  = (ident.year_founded      if ident else None) or vc.year_founded
-    location      = (ident.hq                if ident else None) or vc.location
-    website_url   = (ident.website_url       if ident else None) or str(vc.website_url)
+        # ── Resolve fields (profile overrides vc where both present) ─────────────
+        short_desc    = (ident.short_description if ident else None) or vc.short_description
+        long_desc     = (ident.long_description  if ident else None) or vc.long_description
+        stated_thesis = (ident.stated_thesis     if ident else None) or vc.stated_thesis
+        year_founded  = (ident.year_founded      if ident else None) or vc.year_founded
+        location      = (ident.hq                if ident else None) or vc.location
+        website_url   = _nonempty(
+            (ident.website_url if ident else None) or str(vc.website_url)
+        )
 
-    rounds      = (prefs.stages    if prefs else None) or [r.value for r in vc.rounds]
-    sectors     = (prefs.sectors   if prefs else None) or vc.sectors
-    geo_focus   = (prefs.geo_focus if prefs else None) or vc.geo_focus
-    tendency    = (prefs.tendency  if prefs else None) or (vc.tendency.value if vc.tendency else None)
-    ts_min      = (prefs.ticket_size.minimum_usd if prefs and prefs.ticket_size else None) or vc.ticket_size_min
-    ts_max      = (prefs.ticket_size.maximum_usd if prefs and prefs.ticket_size else None) or vc.ticket_size_max
-    ts_currency = (prefs.ticket_size.currency    if prefs and prefs.ticket_size else None)
-    funds_list  = prefs.funds if prefs else []
+        rounds    = _nonempty_list((prefs.stages    if prefs else None) or [r.value for r in vc.rounds])
+        sectors   = _nonempty_list((prefs.sectors   if prefs else None) or vc.sectors)
+        geo_focus = _nonempty_list((prefs.geo_focus if prefs else None) or vc.geo_focus)
+        tendency  = (prefs.tendency if prefs else None) or (vc.tendency.value if vc.tendency else None)
+        ts_min    = (prefs.ticket_size.minimum_usd if prefs and prefs.ticket_size else None) or vc.ticket_size_min
+        ts_max    = (prefs.ticket_size.maximum_usd if prefs and prefs.ticket_size else None) or vc.ticket_size_max
+        ts_currency = (prefs.ticket_size.currency  if prefs and prefs.ticket_size else None)
+        funds_list  = prefs.funds if prefs else []
 
-    revealed_text = rt.summary if rt else vc.revealed_thesis
-    revealed_json = json.dumps(rt.model_dump(mode="json")) if rt else None
+        revealed_text = rt.summary if rt else vc.revealed_thesis
+        revealed_json = json.dumps(rt.model_dump(mode="json")) if rt else None
 
-    # ── Update investors ──────────────────────────────────────────────────────
-    db.execute(text("""
-        UPDATE investors SET
-            canonical_name          = :name,
-            short_description       = :short_description,
-            long_description        = :long_description,
-            stated_thesis           = :stated_thesis,
-            revealed_thesis         = :revealed_thesis,
-            revealed_thesis_json    = CAST(:revealed_thesis_json AS jsonb),
-            rounds                  = :rounds,
-            sectors                 = :sectors,
-            ticket_size_min         = :ticket_size_min,
-            ticket_size_max         = :ticket_size_max,
-            first_cheque_currency   = COALESCE(:currency, first_cheque_currency),
-            investment_tendency     = :tendency,
-            year_founded            = :year_founded,
-            geo_focus               = :geo_focus,
-            location                = :location,
-            website_url             = :website_url,
-            status                  = :status,
-            slug                    = :slug,
-            enrichment_status       = 'completed',
-            last_enriched_at        = NOW()
-        WHERE external_vc_id = :vc_id
-    """), {
-        "vc_id":                vc_id,
-        "name":                 vc.name,
-        "short_description":    short_desc,
-        "long_description":     long_desc,
-        "stated_thesis":        stated_thesis,
-        "revealed_thesis":      revealed_text,
-        "revealed_thesis_json": revealed_json,
-        "rounds":               rounds,
-        "sectors":              sectors,
-        "ticket_size_min":      ts_min,
-        "ticket_size_max":      ts_max,
-        "currency":             ts_currency,
-        "tendency":             tendency,
-        "year_founded":         year_founded,
-        "geo_focus":            geo_focus,
-        "location":             location,
-        "website_url":          website_url,
-        "status":               vc.status.value if vc.status else None,
-        "slug":                 vc.slug,
-    })
-
-    # ── Replace vc_members ────────────────────────────────────────────────────
-    db.execute(text("DELETE FROM vc_members WHERE vc_id = :vc_id"), {"vc_id": vc_id})
-    for m in payload.team:
-        expertise = [m.area_of_expertise] if m.area_of_expertise else []
+        # ── Update investors — COALESCE so null incoming values keep existing data ─
         db.execute(text("""
-            INSERT INTO vc_members
-                (vc_id, name, position, expertise, description, linkedin, email, joined_at)
-            VALUES
-                (:vc_id, :name, :position, :expertise, :description, :linkedin, :email, :joined_at)
+            UPDATE investors SET
+                canonical_name       = COALESCE(:name,              canonical_name),
+                short_description    = COALESCE(:short_description, short_description),
+                long_description     = COALESCE(:long_description,  long_description),
+                stated_thesis        = COALESCE(:stated_thesis,     stated_thesis),
+                revealed_thesis      = COALESCE(:revealed_thesis,   revealed_thesis),
+                revealed_thesis_json = COALESCE(
+                                           CAST(:revealed_thesis_json AS jsonb),
+                                           revealed_thesis_json
+                                       ),
+                rounds               = COALESCE(:rounds,      rounds),
+                sectors              = COALESCE(:sectors,     sectors),
+                ticket_size_min      = COALESCE(:ticket_size_min, ticket_size_min),
+                ticket_size_max      = COALESCE(:ticket_size_max, ticket_size_max),
+                first_cheque_currency = COALESCE(:currency,   first_cheque_currency),
+                investment_tendency  = COALESCE(:tendency,    investment_tendency),
+                year_founded         = COALESCE(:year_founded, year_founded),
+                geo_focus            = COALESCE(:geo_focus,   geo_focus),
+                location             = COALESCE(:location,    location),
+                website_url          = COALESCE(:website_url, website_url),
+                status               = COALESCE(:status,      status),
+                slug                 = COALESCE(:slug,        slug),
+                enrichment_status    = 'completed',
+                last_enriched_at     = NOW()
+            WHERE external_vc_id = :vc_id
         """), {
-            "vc_id":       vc_id,
-            "name":        m.name,
-            "position":    m.position,
-            "expertise":   expertise,
-            "description": m.description,
-            "linkedin":    m.linkedin,
-            "email":       m.email,
-            "joined_at":   m.joined_at,
+            "vc_id":                external_vc_id,
+            "name":                 _nonempty(vc.name),
+            "short_description":    short_desc,
+            "long_description":     long_desc,
+            "stated_thesis":        stated_thesis,
+            "revealed_thesis":      revealed_text,
+            "revealed_thesis_json": revealed_json,
+            "rounds":               rounds,
+            "sectors":              sectors,
+            "ticket_size_min":      ts_min,
+            "ticket_size_max":      ts_max,
+            "currency":             ts_currency,
+            "tendency":             tendency,
+            "year_founded":         year_founded,
+            "geo_focus":            geo_focus,
+            "location":             location,
+            "website_url":          website_url,
+            "status":               vc.status.value if vc.status else None,
+            "slug":                 _nonempty(vc.slug),
         })
 
-    # ── Replace vc_funds ──────────────────────────────────────────────────────
-    db.execute(text("DELETE FROM vc_funds WHERE vc_id = :vc_id"), {"vc_id": vc_id})
-    for f in funds_list:
-        db.execute(text("""
-            INSERT INTO vc_funds (vc_id, fund_name, fund_size, vintage_year)
-            VALUES (:vc_id, :fund_name, :fund_size, :vintage_year)
-        """), {
-            "vc_id":        vc_id,
-            "fund_name":    f.name,
-            "fund_size":    f.size_usd,
-            "vintage_year": f.vintage_year,
-        })
-
-    # ── Replace portfolio_companies (cascade deletes portco_team) ─────────────
-    db.execute(text("DELETE FROM portfolio_companies WHERE vc_id = :vc_id"), {"vc_id": vc_id})
-    for company in payload.portfolio:
-        stage = [company.investment_stage] if company.investment_stage else []
-        row = db.execute(text("""
-            INSERT INTO portfolio_companies
-                (vc_id, name, overview, sectors, stage, status,
-                 hq, founded_year, company_size, valuation_usd, website_url)
-            VALUES
-                (:vc_id, :name, :overview, :sectors, :stage, :status,
-                 :hq, :founded_year, :company_size, :valuation_usd, :website_url)
-            RETURNING id
-        """), {
-            "vc_id":        vc_id,
-            "name":         company.name,
-            "overview":     company.overview,
-            "sectors":      company.sectors,
-            "stage":        stage,
-            "status":       company.status,
-            "hq":           company.hq,
-            "founded_year": company.founded_in,
-            "company_size": company.company_size,
-            "valuation_usd": company.valuation,
-            "website_url":  company.website_url,
-        })
-        company_id = str(row.scalar())
-
-        for exec_ in (company.executives or []):
-            exec_dict = exec_ if isinstance(exec_, dict) else exec_.model_dump(exclude_none=True) if hasattr(exec_, "model_dump") else {}
+        # ── Replace vc_members ────────────────────────────────────────────────────
+        db.execute(text("DELETE FROM vc_members WHERE vc_id = :vc_id"), {"vc_id": external_vc_id})
+        for m in payload.team:
+            expertise = [m.area_of_expertise] if m.area_of_expertise else []
             db.execute(text("""
-                INSERT INTO portco_team
-                    (portfolio_company_id, name, position, description, linkedin, email)
+                INSERT INTO vc_members
+                    (vc_id, name, position, expertise, description, linkedin, email, joined_at)
                 VALUES
-                    (:pcid, :name, :position, :description, :linkedin, :email)
+                    (:vc_id, :name, :position, :expertise, :description, :linkedin, :email, :joined_at)
             """), {
-                "pcid":        company_id,
-                "name":        exec_dict.get("name", ""),
-                "position":    exec_dict.get("position"),
-                "description": exec_dict.get("description"),
-                "linkedin":    exec_dict.get("linkedin"),
-                "email":       exec_dict.get("email"),
+                "vc_id":       external_vc_id,
+                "name":        m.name,
+                "position":    m.position,
+                "expertise":   expertise,
+                "description": m.description,
+                "linkedin":    m.linkedin,
+                "email":       m.email,
+                "joined_at":   m.joined_at,
             })
 
-    # ── Upsert vc_enrichments ─────────────────────────────────────────────────
-    db.execute(text("""
-        INSERT INTO vc_enrichments (vc_id, enriched_at, raw_payload, depth, branch_traces)
-        VALUES (:vc_id, :enriched_at, CAST(:raw_payload AS jsonb), :depth, CAST(:branch_traces AS jsonb))
-        ON CONFLICT (vc_id) DO UPDATE SET
-            enriched_at   = EXCLUDED.enriched_at,
-            raw_payload   = EXCLUDED.raw_payload,
-            depth         = EXCLUDED.depth,
-            branch_traces = EXCLUDED.branch_traces,
-            updated_at    = NOW()
-    """), {
-        "vc_id":         vc_id,
-        "enriched_at":   payload.enriched_at,
-        "raw_payload":   json.dumps(payload.model_dump(mode="json")),
-        "depth":         payload.depth,
-        "branch_traces": json.dumps([bt.model_dump(mode="json") for bt in payload.branch_traces]),
-    })
+        # ── Replace vc_funds ──────────────────────────────────────────────────────
+        db.execute(text("DELETE FROM vc_funds WHERE vc_id = :vc_id"), {"vc_id": external_vc_id})
+        for f in funds_list:
+            db.execute(text("""
+                INSERT INTO vc_funds (vc_id, fund_name, fund_size, vintage_year)
+                VALUES (:vc_id, :fund_name, :fund_size, :vintage_year)
+            """), {
+                "vc_id":        external_vc_id,
+                "fund_name":    f.name,
+                "fund_size":    f.size_usd,
+                "vintage_year": f.vintage_year,
+            })
 
-    # ── Log to enrichment_runs ────────────────────────────────────────────────
-    db.execute(text("""
-        INSERT INTO enrichment_runs
-            (target_type, target_id, status, completed_at, output_json)
-        VALUES
-            ('investor', :target_id, 'completed', NOW(), CAST(:output_json AS jsonb))
-    """), {
-        "target_id":   str(investor_uuid),
-        "output_json": json.dumps({
-            "vc_id":           vc_id,
-            "members_count":   len(payload.team),
-            "portfolio_count": len(payload.portfolio),
-            "funds_count":     len(funds_list),
-            "depth":           payload.depth,
-        }),
-    })
+        # ── Replace portfolio_companies (cascade deletes portco_team) ─────────────
+        db.execute(text("DELETE FROM portfolio_companies WHERE vc_id = :vc_id"), {"vc_id": external_vc_id})
+        for company in payload.portfolio:
+            stage = [company.investment_stage] if company.investment_stage else []
+            row = db.execute(text("""
+                INSERT INTO portfolio_companies
+                    (vc_id, name, overview, sectors, stage, status,
+                    hq, founded_year, company_size, valuation_usd, website_url)
+                VALUES
+                    (:vc_id, :name, :overview, :sectors, :stage, :status,
+                    :hq, :founded_year, :company_size, :valuation_usd, :website_url)
+                RETURNING id
+            """), {
+                "vc_id":        external_vc_id,
+                "name":         company.name,
+                "overview":     company.overview,
+                "sectors":      company.sectors,
+                "stage":        stage,
+                "status":       company.status,
+                "hq":           company.hq,
+                "founded_year": company.founded_in,
+                "company_size": company.company_size,
+                "valuation_usd": company.valuation,
+                "website_url":  company.website_url,
+            })
+            company_id = str(row.scalar())
 
-    db.commit()
-    return {
-        "status":            "completed",
-        "vc_id":             vc_id,
-        "members_updated":   len(payload.team),
-        "portfolio_updated": len(payload.portfolio),
-        "funds_updated":     len(funds_list),
-    }
+            for exec_ in (company.executives or []):
+                exec_dict = exec_ if isinstance(exec_, dict) else exec_.model_dump(exclude_none=True) if hasattr(exec_, "model_dump") else {}
+                db.execute(text("""
+                    INSERT INTO portco_team
+                        (portfolio_company_id, name, position, description, linkedin, email)
+                    VALUES
+                        (:pcid, :name, :position, :description, :linkedin, :email)
+                """), {
+                    "pcid":        company_id,
+                    "name":        exec_dict.get("name", ""),
+                    "position":    exec_dict.get("position"),
+                    "description": exec_dict.get("description"),
+                    "linkedin":    exec_dict.get("linkedin"),
+                    "email":       exec_dict.get("email"),
+                })
+
+        # ── Upsert vc_enrichments ─────────────────────────────────────────────────
+        db.execute(text("""
+            INSERT INTO vc_enrichments (vc_id, enriched_at, raw_payload, depth, branch_traces)
+            VALUES (:vc_id, :enriched_at, CAST(:raw_payload AS jsonb), :depth, CAST(:branch_traces AS jsonb))
+            ON CONFLICT (vc_id) DO UPDATE SET
+                enriched_at   = EXCLUDED.enriched_at,
+                raw_payload   = EXCLUDED.raw_payload,
+                depth         = EXCLUDED.depth,
+                branch_traces = EXCLUDED.branch_traces,
+                updated_at    = NOW()
+        """), {
+            "vc_id":         external_vc_id,
+            "enriched_at":   payload.enriched_at,
+            "raw_payload":   json.dumps(payload.model_dump(mode="json")),
+            "depth":         payload.depth,
+            "branch_traces": json.dumps([bt.model_dump(mode="json") for bt in payload.branch_traces]),
+        })
+
+        # ── Log to enrichment_runs ────────────────────────────────────────────────
+        db.execute(text("""
+            INSERT INTO enrichment_runs
+                (target_type, target_id, status, completed_at, output_json)
+            VALUES
+                ('investor', :target_id, 'completed', NOW(), CAST(:output_json AS jsonb))
+        """), {
+            "target_id":   str(investor_uuid),
+            "output_json": json.dumps({
+                "vc_id":           external_vc_id,
+                "members_count":   len(payload.team),
+                "portfolio_count": len(payload.portfolio),
+                "funds_count":     len(funds_list),
+                "depth":           payload.depth,
+            }),
+        })
+
+        db.commit()
+        indexing_status, warnings = _rebuild_retrieval_index(db, str(investor_uuid))
+        return {
+            "status":            "completed",
+            "vc_id":             external_vc_id,
+            "members_updated":   len(payload.team),
+            "portfolio_updated": len(payload.portfolio),
+            "funds_updated":     len(funds_list),
+            "indexing_status":   indexing_status,
+            "warnings":          warnings,
+        }
+    except Exception:
+        db.rollback()
+        logger.error(format_exc())
+        raise
+
+
+
+def _resolve_investor_for_enrichment(db: Session, vc_id: str) -> dict[str, Any] | None:
+    if vc_id.isdigit():
+        return _investor_by_external_vc_id(db, int(vc_id))
+    if not _is_uuid(vc_id):
+        return None
+    return _investor_by_uuid(db, vc_id)
+
+
+def _investor_by_external_vc_id(db: Session, external_vc_id: int) -> dict[str, Any] | None:
+    row = db.execute(text("""
+        SELECT id, external_vc_id
+        FROM investors
+        WHERE external_vc_id = :external_vc_id
+    """), {"external_vc_id": external_vc_id}).mappings().first()
+    if not row:
+        return None
+    return dict(row)
+
+
+def _investor_by_uuid(db: Session, investor_id: str) -> dict[str, Any] | None:
+    row = db.execute(text("""
+        SELECT id, external_vc_id
+        FROM investors
+        WHERE id = CAST(:investor_id AS uuid)
+    """), {"investor_id": investor_id}).mappings().first()
+    if not row:
+        return None
+    return dict(row)
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _rebuild_retrieval_index(db: Session, investor_id: str) -> tuple[str, list[str]]:
+    try:
+        index_investor_for_retrieval(db, investor_id)
+        db.commit()
+        return "completed", []
+    except Exception:
+        db.rollback()
+        return "failed", ["Enrichment saved but retrieval index rebuild failed."]
 
 
 # ── Enrichment snapshot for a VC ──────────────────────────────────────────────
@@ -360,4 +439,6 @@ def enrichment_stats(db: Session = Depends(get_db)):
             COUNT(*)                                                   AS total
         FROM investors
     """)).mappings().first()
+    if not row:
+        return {}
     return dict(row)
