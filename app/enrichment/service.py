@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from app.enrichment.models import (
@@ -64,28 +65,32 @@ class EnrichmentService:
         return _build_snapshot(self._session, investor, investor.external_vc_id)
 
     def create_enrichment(
-        self, external_vc_id: int, payload: DeepEnrichedVC,
+        self, slug: str, payload: DeepEnrichedVC,
     ) -> EnrichmentSnapshot:
-        investor = _require_investor(self._session, external_vc_id)
+        investor = _require_investor_by_slug(self._session, slug)
+        external_vc_id = _require_external_vc_id(self._session, investor)
         _reject_existing_enrichment(self._session, external_vc_id)
         _write_enrichment(self._session, external_vc_id, payload)
         return _build_snapshot(self._session, investor, external_vc_id)
 
     def update_enrichment(
-        self, external_vc_id: int, payload: DeepEnrichedVC,
+        self, slug: str, payload: DeepEnrichedVC,
     ) -> EnrichmentSnapshot:
-        investor = _require_investor(self._session, external_vc_id)
+        investor = _require_investor_by_slug(self._session, slug)
+        external_vc_id = _require_external_vc_id(self._session, investor)
         _require_existing_enrichment(self._session, external_vc_id)
         _delete_children(self._session, external_vc_id)
         _write_enrichment(self._session, external_vc_id, payload)
         return _build_snapshot(self._session, investor, external_vc_id)
 
     def complete_enrichment(
-        self, external_vc_id: int, payload: DeepEnrichedVC,
+        self, slug: str, payload: DeepEnrichedVC,
     ) -> EnrichmentSnapshot:
+        investor = _require_investor_by_slug(self._session, slug)
+        external_vc_id = _require_external_vc_id(self._session, investor)
         if _enrichment_exists(self._session, external_vc_id):
-            return self.update_enrichment(external_vc_id, payload)
-        return self.create_enrichment(external_vc_id, payload)
+            return self.update_enrichment(slug, payload)
+        return self.create_enrichment(slug, payload)
 
 
 # ── lookups ───────────────────────────────────────────────────────────────────
@@ -102,6 +107,22 @@ def _require_investor(session: Session, external_vc_id: int) -> Investor:
 def _fetch_investor(session: Session, external_vc_id: int) -> Investor | None:
     statement = select(Investor).where(Investor.external_vc_id == external_vc_id)
     return session.exec(statement).first()
+
+
+def _require_external_vc_id(session: Session, investor: Investor) -> int:
+    if investor.external_vc_id is not None:
+        return investor.external_vc_id
+    investor.external_vc_id = _next_external_vc_id(session)
+    session.add(investor)
+    session.flush()
+    return investor.external_vc_id
+
+
+def _next_external_vc_id(session: Session) -> int:
+    current_max = session.exec(select(func.max(Investor.external_vc_id))).one()
+    if isinstance(current_max, tuple):
+        current_max = current_max[0]
+    return (current_max or 0) + 1
 
 
 def _require_investor_by_slug(session: Session, slug: str) -> Investor:
@@ -161,6 +182,8 @@ def _investor_summary(investor: Investor) -> EnrichmentInvestorSummary:
         canonical_name=investor.canonical_name,
         enrichment_status=investor.enrichment_status,
         last_enriched_at=investor.last_enriched_at,
+        slug=investor.slug,
+        website_url=investor.website_url,
     )
 
 

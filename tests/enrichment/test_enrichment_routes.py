@@ -1,14 +1,8 @@
 """Integration tests for the enrichment write endpoints.
 
-Covers ``POST /enrichment/vc/{external_vc_id}/create`` and
-``PUT /enrichment/vc/{external_vc_id}``. Tests are RED until the
-``EnrichmentService`` write methods are implemented; the route
-handlers translate ``NotImplementedError`` into a 500 today, so every
-non-500 assertion fails for the right reason.
-
-The legacy enrichment router still owns ``GET /enrichment/vc/{vc_id}``
-on the same path, so the new GET handler is intentionally not exercised
-here — a separate file covers the snapshot service-level behaviour.
+Covers ``POST /enrichment/vc/by-slug/{slug}/create``,
+``PUT /enrichment/vc/by-slug/{slug}`` and
+``POST /enrichment/vc/by-slug/{slug}/complete``.
 """
 
 from datetime import datetime
@@ -27,35 +21,28 @@ from app.investors.schemas import InvestorCreate
 from app.investors.service import InvestorsService
 
 
-# ── POST /enrichment/vc/{external_vc_id}/create ──────────────────────────────
+# ── POST /enrichment/vc/by-slug/{slug}/create ────────────────────────────────
 
 def test_post_enrichment_create_returns_201_with_snapshot(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1001
-    _seed_investor(session, external_vc_id=external_vc_id)
+    slug = _seed_investor(session, external_vc_id=external_vc_id)
     payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _post_create(client, external_vc_id=external_vc_id, payload=payload)
+    response = _post_create(client, slug=slug, payload=payload)
 
-    # Assert
     assert response.status_code == 201
 
 
 def test_post_enrichment_create_returns_404_when_investor_missing(
     client: TestClient,
 ) -> None:
-    # Arrange
-    missing_external_vc_id = 999_001
-    payload = _make_payload(external_vc_id=missing_external_vc_id)
+    payload = _make_payload(external_vc_id=999_001)
 
-    # Act
-    response = _post_create(client, external_vc_id=missing_external_vc_id, payload=payload)
+    response = _post_create(client, slug="missing-vc", payload=payload)
     detail = response.json()["detail"]
 
-    # Assert
     assert response.status_code == 404
     assert "investor" in detail.lower()
 
@@ -63,131 +50,111 @@ def test_post_enrichment_create_returns_404_when_investor_missing(
 def test_post_enrichment_create_returns_409_when_already_exists(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1002
-    _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
+    slug = _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
     duplicate_payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _post_create(client, external_vc_id=external_vc_id, payload=duplicate_payload)
+    response = _post_create(client, slug=slug, payload=duplicate_payload)
 
-    # Assert
     assert response.status_code == 409
 
 
-# ── PUT /enrichment/vc/{external_vc_id} ──────────────────────────────────────
+# ── PUT /enrichment/vc/by-slug/{slug} ────────────────────────────────────────
 
 def test_put_enrichment_update_returns_200_with_snapshot(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1003
-    _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
+    slug = _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
     updated_payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _put_update(client, external_vc_id=external_vc_id, payload=updated_payload)
+    response = _put_update(client, slug=slug, payload=updated_payload)
 
-    # Assert
     assert response.status_code == 200
 
 
 def test_put_enrichment_update_returns_404_when_investor_missing(
     client: TestClient,
 ) -> None:
-    # Arrange
-    missing_external_vc_id = 999_002
-    payload = _make_payload(external_vc_id=missing_external_vc_id)
+    payload = _make_payload(external_vc_id=999_002)
 
-    # Act
-    response = _put_update(client, external_vc_id=missing_external_vc_id, payload=payload)
+    response = _put_update(client, slug="missing-vc", payload=payload)
 
-    # Assert
     assert response.status_code == 404
 
 
 def test_put_enrichment_update_returns_404_when_no_existing_record(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1004
-    _seed_investor(session, external_vc_id=external_vc_id)
+    slug = _seed_investor(session, external_vc_id=external_vc_id)
     payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _put_update(client, external_vc_id=external_vc_id, payload=payload)
+    response = _put_update(client, slug=slug, payload=payload)
 
-    # Assert
     assert response.status_code == 404
 
 
-# ── POST /enrichment/vc/{external_vc_id}/complete (upsert) ───────────────────
+# ── POST /enrichment/vc/by-slug/{slug}/complete (upsert) ─────────────────────
 
 def test_post_enrichment_complete_creates_when_no_record_exists(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1005
-    _seed_investor(session, external_vc_id=external_vc_id)
+    slug = _seed_investor(session, external_vc_id=external_vc_id)
     payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _post_complete(client, external_vc_id=external_vc_id, payload=payload)
+    response = _post_complete(client, slug=slug, payload=payload)
 
-    # Assert
     assert response.status_code == 200
 
 
 def test_post_enrichment_complete_updates_when_record_exists(
     client: TestClient, session: Session
 ) -> None:
-    # Arrange
     external_vc_id = 1006
-    _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
+    slug = _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
     second_payload = _make_payload(external_vc_id=external_vc_id)
 
-    # Act
-    response = _post_complete(client, external_vc_id=external_vc_id, payload=second_payload)
+    response = _post_complete(client, slug=slug, payload=second_payload)
 
-    # Assert
     assert response.status_code == 200
 
 
 def test_post_enrichment_complete_returns_404_when_investor_missing(
     client: TestClient,
 ) -> None:
-    # Arrange
-    missing_external_vc_id = 999_003
-    payload = _make_payload(external_vc_id=missing_external_vc_id)
+    payload = _make_payload(external_vc_id=999_003)
 
-    # Act
-    response = _post_complete(client, external_vc_id=missing_external_vc_id, payload=payload)
+    response = _post_complete(client, slug="missing-vc", payload=payload)
     detail = response.json()["detail"]
 
-    # Assert
     assert response.status_code == 404
     assert "investor" in detail.lower()
 
 
 # ── module-level helpers ─────────────────────────────────────────────────────
 
-def _seed_investor(session: Session, *, external_vc_id: int) -> None:
+def _seed_investor(session: Session, *, external_vc_id: int) -> str:
+    slug = f"vc-{external_vc_id}"
     payload = InvestorCreate(
         canonical_name=f"VC {external_vc_id}",
-        slug=f"vc-{external_vc_id}",
+        slug=slug,
         website_url=f"https://vc-{external_vc_id}.com",
         external_vc_id=external_vc_id,
     )
     service = InvestorsService(session)
     service.create(payload)
+    return slug
 
 
 def _seed_existing_enrichment(
     client: TestClient, session: Session, *, external_vc_id: int
-) -> None:
-    _seed_investor(session, external_vc_id=external_vc_id)
+) -> str:
+    slug = _seed_investor(session, external_vc_id=external_vc_id)
     payload = _make_payload(external_vc_id=external_vc_id)
-    _post_create(client, external_vc_id=external_vc_id, payload=payload)
+    _post_create(client, slug=slug, payload=payload)
+    return slug
 
 
 def _make_payload(*, external_vc_id: int) -> DeepEnrichedVC:
@@ -209,21 +176,21 @@ def _make_base_vc(*, external_vc_id: int) -> VC:
 
 
 def _post_create(
-    client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
+    client: TestClient, *, slug: str, payload: DeepEnrichedVC
 ) -> Response:
     body = payload.model_dump(mode="json")
-    return client.post(f"/enrichment/vc/{external_vc_id}/create", json=body)
+    return client.post(f"/enrichment/vc/by-slug/{slug}/create", json=body)
 
 
 def _put_update(
-    client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
+    client: TestClient, *, slug: str, payload: DeepEnrichedVC
 ) -> Response:
     body = payload.model_dump(mode="json")
-    return client.put(f"/enrichment/vc/{external_vc_id}", json=body)
+    return client.put(f"/enrichment/vc/by-slug/{slug}", json=body)
 
 
 def _post_complete(
-    client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
+    client: TestClient, *, slug: str, payload: DeepEnrichedVC
 ) -> Response:
     body = payload.model_dump(mode="json")
-    return client.post(f"/enrichment/vc/{external_vc_id}/complete", json=body)
+    return client.post(f"/enrichment/vc/by-slug/{slug}/complete", json=body)

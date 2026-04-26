@@ -212,6 +212,8 @@ class DeepEnrichedVC(BaseModel):
 class EnrichmentInvestorSummary(BaseModel):
     id: UUID
     canonical_name: str
+    slug: str
+    website_url: str | None = None
     enrichment_status: str | None = None
     last_enriched_at: datetime | None = None
 

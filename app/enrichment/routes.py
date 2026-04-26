@@ -3,6 +3,8 @@
 Skeleton: route signatures only. Bodies are filled in the GREEN phase.
 """
 
+from venv import logger
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
@@ -32,19 +34,19 @@ def get_enrichment(
 
 
 @router.post(
-    "/vc/{external_vc_id}/create",
+    "/vc/by-slug/{slug}/create",
     response_model=EnrichmentSnapshot,
     status_code=201,
 )
 def create_enrichment(
-    external_vc_id: int,
+    slug: str,
     payload: DeepEnrichedVC,
     db: Session = Depends(get_db),
 ) -> EnrichmentSnapshot:
     """Insert enrichment data for a VC and return the resulting snapshot."""
     service = EnrichmentService(db)
     try:
-        return service.create_enrichment(external_vc_id, payload)
+        return service.create_enrichment(slug, payload)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except EnrichmentAlreadyExistsError as error:
@@ -52,18 +54,18 @@ def create_enrichment(
 
 
 @router.put(
-    "/vc/{external_vc_id}",
+    "/vc/by-slug/{slug}",
     response_model=EnrichmentSnapshot,
 )
 def update_enrichment(
-    external_vc_id: int,
+    slug: str,
     payload: DeepEnrichedVC,
     db: Session = Depends(get_db),
 ) -> EnrichmentSnapshot:
     """Replace enrichment data for a VC and return the resulting snapshot."""
     service = EnrichmentService(db)
     try:
-        return service.update_enrichment(external_vc_id, payload)
+        return service.update_enrichment(slug, payload)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except EnrichmentNotFoundError as error:
@@ -71,17 +73,18 @@ def update_enrichment(
 
 
 @router.post(
-    "/vc/{external_vc_id}/complete",
+    "/vc/by-slug/{slug}/complete",
     response_model=EnrichmentSnapshot,
 )
 def complete_enrichment(
-    external_vc_id: int,
+    slug: str,
     payload: DeepEnrichedVC,
     db: Session = Depends(get_db),
 ) -> EnrichmentSnapshot:
     """Upsert enrichment data — create if missing, replace if present."""
     service = EnrichmentService(db)
     try:
-        return service.complete_enrichment(external_vc_id, payload)
+        return service.complete_enrichment(slug, payload)
     except InvestorNotFoundError as error:
+        logger.error(f"Investor not found for slug={slug}: {error}")
         raise HTTPException(status_code=404, detail=str(error)) from error

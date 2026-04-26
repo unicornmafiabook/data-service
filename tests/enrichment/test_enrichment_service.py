@@ -184,7 +184,9 @@ def test_enrichment_service_create_enrichment_persists_records(
     payload = _make_payload(external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).create_enrichment(external_vc_id, payload)
+    snapshot = EnrichmentService(session).create_enrichment(
+        f"vc-{external_vc_id}", payload
+    )
 
     # Assert
     assert snapshot.enriched_at is not None
@@ -200,7 +202,7 @@ def test_enrichment_service_create_enrichment_raises_when_investor_missing(
 
     # Act / Assert
     with pytest.raises(InvestorNotFoundError):
-        EnrichmentService(session).create_enrichment(missing_external_vc_id, payload)
+        EnrichmentService(session).create_enrichment("missing-vc", payload)
 
 
 def test_enrichment_service_create_enrichment_raises_when_already_exists(
@@ -213,7 +215,7 @@ def test_enrichment_service_create_enrichment_raises_when_already_exists(
 
     # Act / Assert
     with pytest.raises(EnrichmentAlreadyExistsError):
-        service.create_enrichment(external_vc_id, duplicate_payload)
+        service.create_enrichment(f"vc-{external_vc_id}", duplicate_payload)
 
 
 # ── update_enrichment ─────────────────────────────────────────────────────────
@@ -227,7 +229,7 @@ def test_enrichment_service_update_enrichment_replaces_records(
     updated_payload = _make_payload_with_two_members(external_vc_id=external_vc_id)
 
     # Act
-    snapshot = service.update_enrichment(external_vc_id, updated_payload)
+    snapshot = service.update_enrichment(f"vc-{external_vc_id}", updated_payload)
 
     # Assert
     assert len(snapshot.members) == 2
@@ -242,7 +244,7 @@ def test_enrichment_service_update_enrichment_raises_when_investor_missing(
 
     # Act / Assert
     with pytest.raises(InvestorNotFoundError):
-        EnrichmentService(session).update_enrichment(missing_external_vc_id, payload)
+        EnrichmentService(session).update_enrichment("missing-vc", payload)
 
 
 def test_enrichment_service_update_enrichment_raises_when_no_existing_record(
@@ -255,7 +257,7 @@ def test_enrichment_service_update_enrichment_raises_when_no_existing_record(
 
     # Act / Assert
     with pytest.raises(EnrichmentNotFoundError):
-        EnrichmentService(session).update_enrichment(external_vc_id, payload)
+        EnrichmentService(session).update_enrichment(f"vc-{external_vc_id}", payload)
 
 
 # ── write-path helpers ────────────────────────────────────────────────────────
@@ -293,7 +295,7 @@ def _setup_existing_enrichment(
     _create_investor(session, external_vc_id=external_vc_id)
     payload = _make_payload(external_vc_id=external_vc_id)
     service = EnrichmentService(session)
-    service.create_enrichment(external_vc_id, payload)
+    service.create_enrichment(f"vc-{external_vc_id}", payload)
     return service
 
 
@@ -308,7 +310,7 @@ def test_enrichment_service_complete_enrichment_creates_when_no_record_exists(
     payload = _make_payload(external_vc_id=external_vc_id)
 
     # Act
-    snapshot = EnrichmentService(session).complete_enrichment(external_vc_id, payload)
+    snapshot = EnrichmentService(session).complete_enrichment(f"vc-{external_vc_id}", payload)
 
     # Assert
     assert snapshot.enriched_at is not None
@@ -324,7 +326,7 @@ def test_enrichment_service_complete_enrichment_updates_when_record_exists(
     updated_payload = _make_payload_with_two_members(external_vc_id=external_vc_id)
 
     # Act
-    snapshot = service.complete_enrichment(external_vc_id, updated_payload)
+    snapshot = service.complete_enrichment(f"vc-{external_vc_id}", updated_payload)
 
     # Assert
     assert len(snapshot.members) == 2
@@ -339,4 +341,4 @@ def test_enrichment_service_complete_enrichment_raises_when_investor_missing(
 
     # Act / Assert
     with pytest.raises(InvestorNotFoundError):
-        EnrichmentService(session).complete_enrichment(missing_external_vc_id, payload)
+        EnrichmentService(session).complete_enrichment("missing-vc", payload)
