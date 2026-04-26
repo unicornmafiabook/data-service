@@ -1,0 +1,37 @@
+# Local Postgres for the data-service.
+#
+# Vanilla Postgres 16 — no schema is applied at boot. Apply schema separately
+# (e.g. via `alembic upgrade head`) once the container is healthy.
+#
+# Connection string:
+#   postgresql+psycopg2://postgres:postgres@localhost:5433/data_service_dev
+# (matches DATABASE_URL in .env.development)
+#
+# Usage:
+#   docker compose up -d            # start
+#   docker compose ps               # confirm "healthy"
+#   docker compose logs -f postgres # tail logs
+#   docker compose down             # stop, keep data
+#   docker compose down -v          # stop, drop data
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: data_service_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: data_service_dev
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d data_service_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
