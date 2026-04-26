@@ -68,3 +68,20 @@ def update_enrichment(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except EnrichmentNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.post(
+    "/vc/{external_vc_id}/complete",
+    response_model=EnrichmentSnapshot,
+)
+def complete_enrichment(
+    external_vc_id: int,
+    payload: DeepEnrichedVC,
+    db: Session = Depends(get_db),
+) -> EnrichmentSnapshot:
+    """Upsert enrichment data — create if missing, replace if present."""
+    service = EnrichmentService(db)
+    try:
+        return service.complete_enrichment(external_vc_id, payload)
+    except InvestorNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error

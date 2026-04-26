@@ -121,6 +121,54 @@ def test_put_enrichment_update_returns_404_when_no_existing_record(
     assert response.status_code == 404
 
 
+# ── POST /enrichment/vc/{external_vc_id}/complete (upsert) ───────────────────
+
+def test_post_enrichment_complete_creates_when_no_record_exists(
+    client: TestClient, session: Session
+) -> None:
+    # Arrange
+    external_vc_id = 1005
+    _seed_investor(session, external_vc_id=external_vc_id)
+    payload = _make_payload(external_vc_id=external_vc_id)
+
+    # Act
+    response = _post_complete(client, external_vc_id=external_vc_id, payload=payload)
+
+    # Assert
+    assert response.status_code == 200
+
+
+def test_post_enrichment_complete_updates_when_record_exists(
+    client: TestClient, session: Session
+) -> None:
+    # Arrange
+    external_vc_id = 1006
+    _seed_existing_enrichment(client, session, external_vc_id=external_vc_id)
+    second_payload = _make_payload(external_vc_id=external_vc_id)
+
+    # Act
+    response = _post_complete(client, external_vc_id=external_vc_id, payload=second_payload)
+
+    # Assert
+    assert response.status_code == 200
+
+
+def test_post_enrichment_complete_returns_404_when_investor_missing(
+    client: TestClient,
+) -> None:
+    # Arrange
+    missing_external_vc_id = 999_003
+    payload = _make_payload(external_vc_id=missing_external_vc_id)
+
+    # Act
+    response = _post_complete(client, external_vc_id=missing_external_vc_id, payload=payload)
+    detail = response.json()["detail"]
+
+    # Assert
+    assert response.status_code == 404
+    assert "investor" in detail.lower()
+
+
 # ── module-level helpers ─────────────────────────────────────────────────────
 
 def _seed_investor(session: Session, *, external_vc_id: int) -> None:
@@ -172,3 +220,10 @@ def _put_update(
 ) -> Response:
     body = payload.model_dump(mode="json")
     return client.put(f"/enrichment/vc/{external_vc_id}", json=body)
+
+
+def _post_complete(
+    client: TestClient, *, external_vc_id: int, payload: DeepEnrichedVC
+) -> Response:
+    body = payload.model_dump(mode="json")
+    return client.post(f"/enrichment/vc/{external_vc_id}/complete", json=body)
