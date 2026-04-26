@@ -9,3 +9,4 @@ rapidfuzz==3.10.1
 tldextract==5.1.2
 pydantic==2.10.3
 pydantic-settings==2.6.1
+pydantic-ai-slim[google]==1.16.0

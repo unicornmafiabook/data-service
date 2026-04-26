@@ -80,7 +80,7 @@ class PortfolioCompany(BaseModel):
 # ── VC ────────────────────────────────────────────────────────────────────────
 
 class VC(BaseModel):
-    id:                int
+    id:                str
     name:              str
     short_description: str | None = None
     long_description:  str | None = None   # research / deep notes

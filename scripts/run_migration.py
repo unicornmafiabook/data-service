@@ -15,10 +15,11 @@ DEFAULT_MIGRATION = REPO_ROOT / "sql" / "migration_v2_expanded_fields.sql"
 
 
 def run(sql_file: Path):
-    sql = sql_file.read_text()
+    resolved_sql_file = sql_file.resolve()
+    sql = resolved_sql_file.read_text()
     with engine.begin() as conn:
         conn.execute(text(sql))
-    print(f"Applied: {sql_file.relative_to(REPO_ROOT)}")
+    print(f"Applied: {resolved_sql_file.relative_to(REPO_ROOT)}")
 
 
 def main():
