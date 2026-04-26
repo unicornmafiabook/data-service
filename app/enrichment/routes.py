@@ -9,8 +9,8 @@ from sqlmodel import Session
 from app.db.session import get_db
 from app.enrichment.schemas import EnrichmentSnapshot
 from app.enrichment.service import (
+    EnrichmentService,
     InvestorNotFoundError,
-    get_enrichment_snapshot,
 )
 
 router = APIRouter(prefix="/enrichment", tags=["enrichment"])
@@ -22,7 +22,8 @@ def get_enrichment(
     db: Session = Depends(get_db),
 ) -> EnrichmentSnapshot:
     """Return the full enrichment snapshot for the given VC."""
+    service = EnrichmentService(db)
     try:
-        return get_enrichment_snapshot(db, external_vc_id)
+        return service.get_snapshot(external_vc_id)
     except InvestorNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
